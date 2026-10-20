@@ -103,7 +103,7 @@ async function runSync(api: GitAPI, repo: GitRepo, from: string, to: string, man
 				.then((p) => p && out.show());
 		} else if (stats.files || manual) {
 			const msg = stats.files
-				? `Translation Key Sync: updated ${stats.files} file(s) in the translation repo` + (stats.created ? ` (${stats.created} newly created).` : '.')
+				? `Translation Key Sync: updated ${stats.files} file(s) in the DestinationRepo` + (stats.created ? ` (${stats.created} newly created).` : '.')
 				: 'Translation Key Sync: no locale key changes to sync.';
 			// don't await: an unanswered toast must not hold up the sync of the next commit
 			void vscode.window.showInformationMessage(msg, 'Show log').then((pick) => pick && out.show());
@@ -286,7 +286,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
 	);
 	if (!isConfigured() && !ctx.globalState.get('setupDeclined')) {
 		vscode.window
-			.showInformationMessage('Translation Key Sync needs to know where your FE and translation repos are.', 'Set up', 'Not now', "Don't ask again")
+			.showInformationMessage('Translation Key Sync needs to know where your source and destination repos are.', 'Set up', 'Not now', "Don't ask again")
 			.then((p) => {
 				if (p === 'Set up') {
 					openConfigPanel(ctx, refreshStatus);

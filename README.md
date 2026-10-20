@@ -1,6 +1,6 @@
 # Translation Key Sync
 
-After every commit you make in the FE repo, copies the changed i18n keys into the translation repo
+After every commit you make in the SourceRepo, copies the changed i18n keys into the DestinationRepo
 (same file, same key) for every configured locale, translating them on the way.
 
 ## Setup (per developer)
@@ -9,11 +9,11 @@ Click **Key Sync: set up** in the status bar (or run **Translation Key Sync: Con
 
 | Setting | Example |
 |---|---|
-| `localeSync.sourceDir` | `C:/FE/wh-react-web-frontend/public/translations/fallback/locales/en` |
-| `localeSync.targetDir` | `C:/FE/wh-translation-docs/locales` |
-| `localeSync.locales` | `["ar","en","es","sl","ta"]` |
+| `localeSync.sourceDir` | `C:/SourceRepo/path/to/locales/en` |
+| `localeSync.targetDir` | `C:/DestinationRepo/locales` |
+| `localeSync.locales` | `["en","fr","es"]` |
 
-The FE repo must be open in VS Code. The translation repo does not need to be.
+The SourceRepo must be open in VS Code. The DestinationRepo does not need to be.
 
 ## What it does
 
@@ -27,8 +27,8 @@ The FE repo must be open in VS Code. The translation repo does not need to be.
 
 ## Behaviour details
 
-- A **new** source file, or a changed file whose copy is missing in the translation repo, is created whole
-  (all keys), with the source file's line endings and indentation. Sub-folders such as `dev_mode/` are mirrored.
+- A **new** source file, or a changed file whose copy is missing in the DestinationRepo, is created whole
+  (all keys), with the source file's line endings and indentation. Sub-folders are mirrored.
 - Source files deleted in a commit are ignored; target files are never deleted.
 - Booleans, numbers and `null` are copied as-is. Multi-line strings are translated line by line.
 - `localeSync.provider`: `auto` uses the Hugging Face backend and switches to Google first when a commit needs
@@ -47,8 +47,8 @@ The FE repo must be open in VS Code. The translation repo does not need to be.
   The queue is retried automatically every 5 minutes and at startup (or run **Retry Pending Translations**). A queued
   string is only replaced if the file still holds the English placeholder; if someone edited it meanwhile it is left alone.
 - **Interrupted syncs:** if VS Code closes mid-sync, the commit is synced again at the next start.
-- Nothing is committed or pushed in either repo. Review the translation repo's working tree yourself.
-  To undo: `git checkout -- .` and `git clean -fd locales` in the translation repo.
+- Nothing is committed or pushed in either repo. Review the DestinationRepo's working tree yourself.
+  To undo: `git checkout -- .` and `git clean -fd locales` in the DestinationRepo.
 - `backend-patch/README.md` (in the source repo) describes optional fixes to the Space: a source-language
   parameter and longer strings.
 

@@ -37,12 +37,12 @@ function load(): Form {
 function validate(f: Form): string[] {
 	const errs: string[] = [];
 	if (!f.sourceDir) {
-		errs.push('Choose the source folder (the English locale folder in the FE repo).');
+		errs.push('Choose the source folder (the English locale folder in the SourceRepo).');
 	} else if (!isDir(f.sourceDir)) {
 		errs.push('Source folder does not exist.');
 	}
 	if (!f.targetDir) {
-		errs.push('Choose the target folder (the "locales" folder in the translation repo).');
+		errs.push('Choose the target folder (the "locales" folder in the DestinationRepo).');
 	} else if (!isDir(f.targetDir)) {
 		errs.push('Target folder does not exist.');
 	}
@@ -108,7 +108,7 @@ export function openConfigPanel(ctx: vscode.ExtensionContext, onSaved: () => voi
 				}
 				const hasRepo = (vscode.workspace.workspaceFolders ?? []).length > 0;
 				if (!hasRepo) {
-					warn.push('Open the FE repo folder in VS Code so commits can be detected.');
+					warn.push('Open the SourceRepo folder in VS Code so commits can be detected.');
 				}
 				panel?.webview.postMessage({ type: 'saved', warnings: warn });
 				onSaved();
@@ -156,14 +156,14 @@ function html(nonce: string, csp: string, f: Form): string {
 </style></head>
 <body>
 <h1>Translation Key Sync settings</h1>
-<p class="sub">Tell the extension where your FE repo and translation repo live on this machine.</p>
+<p class="sub">Tell the extension where your SourceRepo and DestinationRepo live on this machine.</p>
 
-<label class="t" for="sourceDir">Source folder (FE repo)</label>
-<div class="hint">The English locale folder, e.g. <code>C:\\FE\\wh-react-web-frontend\\public\\translations\\fallback\\locales\\en</code></div>
+<label class="t" for="sourceDir">Source folder (SourceRepo)</label>
+<div class="hint">The English locale folder, e.g. <code>C:\\SourceRepo\\path\\to\\locales\\en</code></div>
 <div class="row"><input type="text" id="sourceDir" value="${esc(f.sourceDir)}"><button class="sec" data-browse="sourceDir">Browse…</button></div>
 
-<label class="t" for="targetDir">Target folder (translation repo)</label>
-<div class="hint">The <code>locales</code> folder that contains one sub-folder per language, e.g. <code>C:\\FE\\wh-translation-docs\\locales</code></div>
+<label class="t" for="targetDir">Target folder (DestinationRepo)</label>
+<div class="hint">The <code>locales</code> folder that contains one sub-folder per language, e.g. <code>C:\\DestinationRepo\\locales</code></div>
 <div class="row"><input type="text" id="targetDir" value="${esc(f.targetDir)}"><button class="sec" data-browse="targetDir">Browse…</button></div>
 
 <label class="t">Locales to sync</label>
@@ -172,7 +172,7 @@ function html(nonce: string, csp: string, f: Form): string {
 <div class="row">
 	<input type="text" id="newLocale" placeholder="e.g. fr">
 	<button class="sec" id="add">Add</button>
-	<button class="sec" id="detect">Detect from target folder</button>
+	<button class="sec" id="detect">Detect from destination folder</button>
 </div>
 
 <label class="t" for="sourceLocale">Source language</label>

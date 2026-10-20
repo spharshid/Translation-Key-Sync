@@ -50,7 +50,7 @@ class UnsupportedError extends Error {}
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// {{name}}, {name}, {"json": 1}, %s / %d, $t(key), <b>, </b>, <Step Name>, &nbsp;
+// {{name}}, {name}, {"json": 1}, %s / %d, $t(key), <b>, </b>, <Name>, &nbsp;
 const PLACEHOLDER_RE = /\{\{[^}]*\}\}|\{[^{}]*\}|%[sdif]|\$t\([^)]*\)|<\/?[a-zA-Z0-9]+[^>]*>|&[a-z]+;/g;
 
 function protect(text: string): { masked: string; tokens: string[] } {

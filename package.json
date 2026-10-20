@@ -1,8 +1,8 @@
 {
   "name": "translation-key-sync",
   "displayName": "Translation Key Sync",
-  "description": "Auto-syncs changed i18n keys from the FE repo to the translation repo on commit",
-  "version": "0.0.1",
+  "description": "Automatically syncs changed i18n keys from a source repo to a destination (translation) repo on every commit, translating them for each locale",
+  "version": "0.0.2",
   "icon": "images/icon.png",
   "engines": {
     "vscode": "^1.90.0"
@@ -48,26 +48,20 @@
         "localeSync.sourceDir": {
           "type": "string",
           "default": "",
-          "description": "Absolute path of the source locale folder in the FE repo (e.g. C:/FE/wh-react-web-frontend/public/translations/fallback/locales/en)."
+          "description": "Absolute path of the source locale folder in the SourceRepo (e.g. C:/SourceRepo/path/to/locales/en)."
         },
         "localeSync.targetDir": {
           "type": "string",
           "default": "",
-          "description": "Absolute path of the translation repo locales folder that contains one sub-folder per locale (e.g. C:/FE/wh-translation-docs/locales)."
+          "description": "Absolute path of the DestinationRepo folder that contains one sub-folder per locale (e.g. C:/DestinationRepo/locales)."
         },
         "localeSync.locales": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": [
-            "ar",
-            "en",
-            "es",
-            "sl",
-            "ta"
-          ],
-          "description": "Locale folders to write to under targetDir."
+          "default": [],
+          "description": "Locale folders to write to under the destination folder (e.g. [\"en\",\"fr\",\"es\"]). Use \"Detect from destination folder\" on the settings screen to fill this in."
         },
         "localeSync.sourceLocale": {
           "type": "string",
@@ -154,5 +148,6 @@
   "bugs": {
     "url": "https://github.com/spharshid/Translation-Key-Sync/issues"
   },
-  "homepage": "https://github.com/spharshid/Translation-Key-Sync#readme"
+  "homepage": "https://github.com/spharshid/Translation-Key-Sync#readme",
+  "license": "MIT"
 }
