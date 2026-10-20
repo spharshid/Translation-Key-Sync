@@ -1,0 +1,158 @@
+{
+  "name": "translation-key-sync",
+  "displayName": "Translation Key Sync",
+  "description": "Auto-syncs changed i18n keys from the FE repo to the translation repo on commit",
+  "version": "0.0.1",
+  "icon": "images/icon.png",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "localeSync.configure",
+        "title": "Configure",
+        "category": "Translation Key Sync"
+      },
+      {
+        "command": "localeSync.syncLastCommit",
+        "title": "Sync Last Commit",
+        "category": "Translation Key Sync"
+      },
+      {
+        "command": "localeSync.showLog",
+        "title": "Show Log",
+        "category": "Translation Key Sync"
+      },
+      {
+        "command": "localeSync.retryPending",
+        "title": "Retry Pending Translations",
+        "category": "Translation Key Sync"
+      }
+    ],
+    "configuration": {
+      "title": "Translation Key Sync",
+      "properties": {
+        "localeSync.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Sync automatically after each commit."
+        },
+        "localeSync.sourceDir": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path of the source locale folder in the FE repo (e.g. C:/FE/wh-react-web-frontend/public/translations/fallback/locales/en)."
+        },
+        "localeSync.targetDir": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path of the translation repo locales folder that contains one sub-folder per locale (e.g. C:/FE/wh-translation-docs/locales)."
+        },
+        "localeSync.locales": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "ar",
+            "en",
+            "es",
+            "sl",
+            "ta"
+          ],
+          "description": "Locale folders to write to under targetDir."
+        },
+        "localeSync.sourceLocale": {
+          "type": "string",
+          "default": "en",
+          "description": "Language of the source files. This locale is copied, not translated."
+        },
+        "localeSync.onlyOwnCommits": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ignore commits authored by someone else (e.g. single-commit fast-forward pulls)."
+        },
+        "localeSync.backendUrl": {
+          "type": "string",
+          "default": "https://spharshid-text-translator.hf.space",
+          "description": "Translation backend (POST /translate {text, lang}). Falls back to Google if unavailable."
+        },
+        "localeSync.backendTimeoutSeconds": {
+          "type": "number",
+          "default": 60,
+          "description": "Backend timeout before falling back to Google (free Spaces can take a while to wake up)."
+        },
+        "localeSync.provider": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "backend",
+            "google"
+          ],
+          "default": "auto",
+          "description": "Translation source. auto = Hugging Face backend first (slow but private), switching to Google first for big batches; backend = backend only; google = Google only."
+        },
+        "localeSync.maxWaitMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "description": "How long one sync keeps waiting for a translation service (cold-starting backend, rate-limited Google) before writing English for the remaining strings and queuing them for automatic retry."
+        },
+        "localeSync.googleUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Advanced: override the Google translate endpoint (for example a corporate proxy). Leave empty for the default."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.5.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
+  },
+  "publisher": "spharshid",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spharshid/Translation-Key-Sync.git"
+  },
+  "bugs": {
+    "url": "https://github.com/spharshid/Translation-Key-Sync/issues"
+  },
+  "homepage": "https://github.com/spharshid/Translation-Key-Sync#readme"
+}
