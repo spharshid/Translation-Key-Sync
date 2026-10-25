@@ -31,4 +31,10 @@
     <text x="214" y="133">æ</text>
     <text x="214" y="191">あ</text>
   </g>
+
+  <!-- AI sparkle: a large and a small four-point star above the key -->
+  <g fill="#fff">
+    <path d="M66 36 Q66 64 94 64 Q66 64 66 92 Q66 64 38 64 Q66 64 66 36 Z"/>
+    <path d="M104 24 Q104 36 116 36 Q104 36 104 48 Q104 36 92 36 Q104 36 104 24 Z"/>
+  </g>
 </svg>
