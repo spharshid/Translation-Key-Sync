@@ -1,5 +1,9 @@
 # Optional backend patch for the Text_Translator Space
 
+> **Status:** the Space is now only the *last-resort* machine-translation fallback (Google is tried first, and the AI engine before
+> both). Do not invest in it expecting AI-level quality: it is a context-free machine translator on a single shared CPU. The changes
+> below only make that last resort less bad.
+
 The extension works with the Space as it is today. These changes make it faster and more accurate.
 Apply them to `app/main.py` in the Space (https://huggingface.co/spaces/spharshid/Text_Translator).
 
@@ -59,6 +63,6 @@ The extension splits on newlines itself, so this is only needed for other client
 ## Notes
 
 - Free Spaces sleep after inactivity; the first request wakes the container and can take a minute.
-  The extension waits 60 s (setting `localeSync.backendTimeoutSeconds`) before falling back to Google.
+  The extension waits 60 s (setting `i18nSync.backendTimeoutSeconds`) before falling back to Google.
 - A batch endpoint (`POST /translate_batch` taking `texts: list[str]`, running `tokenizer(..., padding=True)` once)
   would cut the per-string overhead the most. The extension does not use one yet.
