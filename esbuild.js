@@ -23,6 +23,10 @@ const esbuildProblemMatcherPlugin = {
 	},
 };
 
+// Optional extra build plugins from a local file that is not in the repository; none when it is absent.
+const hookFile = require('path').join(__dirname, 'private', 'build-hook.cjs');
+const extraPlugins = require('fs').existsSync(hookFile) ? require(hookFile)(esbuild, { outfile: 'dist/extension.js' }) : [];
+
 async function main() {
 	const ctx = await esbuild.context({
 		entryPoints: [
@@ -40,6 +44,7 @@ async function main() {
 		logLevel: 'silent',
 		plugins: [
 			/* add to the end of plugins array */
+			...extraPlugins,
 			esbuildProblemMatcherPlugin,
 		],
 	});

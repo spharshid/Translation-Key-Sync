@@ -1,13 +1,14 @@
 {
-  "name": "translation-key-sync",
-  "displayName": "Translation Key Sync",
-  "description": "Automatically syncs changed i18n keys from a source repo to a destination (translation) repo on every commit, translating them for each locale",
-  "version": "0.0.2",
+  "name": "i18n-ai-translate-sync",
+  "displayName": "i18n AI Translate & Sync",
+  "description": "Keeps every locale file in sync and translates new or changed i18n strings with an AI model (GitHub Copilot or any OpenAI-compatible endpoint), using your product glossary for accurate, review-ready translations.",
+  "version": "0.1.0",
   "icon": "images/icon.png",
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
+    "Machine Learning",
     "Other"
   ],
   "activationEvents": [
@@ -17,73 +18,168 @@
   "contributes": {
     "commands": [
       {
-        "command": "localeSync.configure",
+        "command": "i18nSync.configure",
         "title": "Configure",
-        "category": "Translation Key Sync"
+        "category": "i18n AI Translate & Sync"
       },
       {
-        "command": "localeSync.syncLastCommit",
-        "title": "Sync Last Commit",
-        "category": "Translation Key Sync"
+        "command": "i18nSync.syncLastCommit",
+        "title": "Sync Last Commit (the latest commit of the source folder to the ticked destinations)",
+        "category": "i18n AI Translate & Sync"
       },
       {
-        "command": "localeSync.showLog",
+        "command": "i18nSync.showLog",
         "title": "Show Log",
-        "category": "Translation Key Sync"
+        "category": "i18n AI Translate & Sync"
       },
       {
-        "command": "localeSync.retryPending",
+        "command": "i18nSync.retryPending",
         "title": "Retry Pending Translations",
-        "category": "Translation Key Sync"
+        "category": "i18n AI Translate & Sync"
+      },
+      {
+        "command": "i18nSync.syncDestination",
+        "title": "Sync Locales (sync the source to the ticked destinations)",
+        "category": "i18n AI Translate & Sync",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "i18nSync.testAi",
+        "title": "Test AI Translation",
+        "category": "i18n AI Translate & Sync"
+      },
+      {
+        "command": "i18nSync.qualityCheck",
+        "title": "Check Translation Quality",
+        "category": "i18n AI Translate & Sync"
+      },
+      {
+        "command": "i18nSync.createContextTemplate",
+        "title": "Create Context File from Template",
+        "category": "i18n AI Translate & Sync"
+      },
+      {
+        "command": "i18nSync.openContextFile",
+        "title": "Open Context File",
+        "category": "i18n AI Translate & Sync"
+      },
+      {
+        "command": "i18nSync.setApiKey",
+        "title": "Set API Key for a Custom AI Endpoint",
+        "category": "i18n AI Translate & Sync"
+      },
+      {
+        "command": "i18nSync.copyAiPrompt",
+        "title": "Improve with My AI Chat (copy prompt)",
+        "category": "i18n AI Translate & Sync"
+      },
+      {
+        "command": "i18nSync.applyAiAnswer",
+        "title": "Apply AI Answer from Clipboard",
+        "category": "i18n AI Translate & Sync"
+      },
+      {
+        "command": "i18nSync.showStatus",
+        "title": "Show Translation Status (not translated, problems, retry)",
+        "category": "i18n AI Translate & Sync"
       }
     ],
     "configuration": {
-      "title": "Translation Key Sync",
+      "title": "i18n AI Translate & Sync",
       "properties": {
-        "localeSync.enabled": {
+        "i18nSync.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Sync automatically after each commit."
+          "description": "Sync automatically after each commit in the source folder's repo, into the ticked destinations (no prompt). Off: nothing happens on commit; use \"Sync Last Commit\" or the Sync Locales button when you want."
         },
-        "localeSync.sourceDir": {
+        "i18nSync.source": {
           "type": "string",
           "default": "",
-          "description": "Absolute path of the source locale folder in the SourceRepo (e.g. C:/SourceRepo/path/to/locales/en)."
+          "description": "The folder with the base-language files that strings are synced from, e.g. C:/AppRepo/locales/en (a fallback copy in an application repo) or C:/TranslationRepo/locales/en. Use ~/ for your home folder on macOS/Linux."
         },
-        "localeSync.targetDir": {
-          "type": "string",
-          "default": "",
-          "description": "Absolute path of the DestinationRepo folder that contains one sub-folder per locale (e.g. C:/DestinationRepo/locales)."
+        "i18nSync.destinations": {
+          "type": "array",
+          "default": [],
+          "description": "Where the source is synced to. Each destination has a folder, a type and a tick. \"translate\": a folder with one sub-folder per language (i18nSync.locales) that receives translations; \"copy\": a folder that receives the base language as it is (for example a fallback copy in another repo). Only ticked (enabled) destinations are used; with more than one, Sync Locales asks which to use for each batch (i18nSync.askDestinations).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The folder."
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "translate",
+                  "copy"
+                ],
+                "default": "translate",
+                "enumDescriptions": [
+                  "Translate into every language (a folder with one sub-folder per language)",
+                  "Copy the base language as it is"
+                ],
+                "description": "What is written there."
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Tick: include this destination when syncing."
+              }
+            },
+            "required": [
+              "path"
+            ]
+          },
+          "examples": [
+            [
+              {
+                "path": "C:/TranslationRepo/locales",
+                "mode": "translate",
+                "enabled": true
+              },
+              {
+                "path": "C:/AppRepo/locales/en",
+                "mode": "copy",
+                "enabled": true
+              }
+            ]
+          ]
         },
-        "localeSync.locales": {
+        "i18nSync.askDestinations": {
+          "type": "boolean",
+          "default": true,
+          "description": "When more than one destination is ticked, ask which of them to use each time Sync Locales runs (so one batch can go to one repo and another batch to both)."
+        },
+        "i18nSync.locales": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [],
-          "description": "Locale folders to write to under the destination folder (e.g. [\"en\",\"fr\",\"es\"]). Use \"Detect from destination folder\" on the settings screen to fill this in."
+          "description": "Languages (the sub-folders of every \"translate\" destination) that receive translations, e.g. [\"en\",\"fr\",\"es\"]. Include the base language if you want it kept in the destination too."
         },
-        "localeSync.sourceLocale": {
+        "i18nSync.sourceLocale": {
           "type": "string",
           "default": "en",
-          "description": "Language of the source files. This locale is copied, not translated."
+          "description": "The base language: the language strings are written in. It is copied as is, never translated, and is the language everything else is translated from."
         },
-        "localeSync.onlyOwnCommits": {
+        "i18nSync.onlyOwnCommits": {
           "type": "boolean",
           "default": true,
           "description": "Ignore commits authored by someone else (e.g. single-commit fast-forward pulls)."
         },
-        "localeSync.backendUrl": {
+        "i18nSync.backendUrl": {
           "type": "string",
           "default": "https://spharshid-text-translator.hf.space",
-          "description": "Translation backend (POST /translate {text, lang}). Falls back to Google if unavailable."
+          "description": "Hugging Face Space used as the last machine-translation fallback (POST /translate {text, lang})."
         },
-        "localeSync.backendTimeoutSeconds": {
+        "i18nSync.backendTimeoutSeconds": {
           "type": "number",
           "default": 60,
           "description": "Backend timeout before falling back to Google (free Spaces can take a while to wake up)."
         },
-        "localeSync.provider": {
+        "i18nSync.provider": {
           "type": "string",
           "enum": [
             "auto",
@@ -91,21 +187,103 @@
             "google"
           ],
           "default": "auto",
-          "description": "Translation source. auto = Hugging Face backend first (slow but private), switching to Google first for big batches; backend = backend only; google = Google only."
+          "description": "Machine-translation fallback, used only when no AI answers. auto = Google first (then the Hugging Face Space if Google is blocked); google = Google only; backend = the Space only."
         },
-        "localeSync.maxWaitMinutes": {
+        "i18nSync.maxWaitMinutes": {
           "type": "number",
           "default": 5,
           "minimum": 1,
-          "description": "How long one sync keeps waiting for a translation service (cold-starting backend, rate-limited Google) before writing English for the remaining strings and queuing them for automatic retry."
+          "description": "How long one sync keeps waiting for a translation service (cold-starting backend, rate-limited Google) before writing English for the remaining strings and queuing them for automatic retry. About 2 seconds per string are added on top (at most 30 minutes in all), so large syncs get the time they need."
         },
-        "localeSync.googleUrl": {
+        "i18nSync.googleUrl": {
           "type": "string",
           "default": "",
-          "description": "Advanced: override the Google translate endpoint (for example a corporate proxy). Leave empty for the default."
+          "description": "Advanced: use this Google-compatible translate endpoint instead of the two built-in ones (for example a corporate proxy). Leave empty for the default."
+        },
+        "i18nSync.contextFile": {
+          "type": "string",
+          "default": "",
+          "description": "Path of the context file (product description, tone, approved glossary, names to keep). Empty: use i18n-context.json inside the locales folder if it exists. Use \"Create Context File from Template\" to make one."
+        },
+        "i18nSync.ai.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master switch for AI translation. Off: only machine translation (Google, then the Hugging Face Space) is used. Normally left on."
+        },
+        "i18nSync.ai.provider": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "gemini",
+            "groq",
+            "ollama",
+            "custom"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Nothing of your own: GitHub Copilot, then the free services",
+            "Google Gemini with your free API key",
+            "Groq with your free API key",
+            "A model running on this computer under Ollama",
+            "Any OpenAI-compatible server (base URL, model and key)"
+          ],
+          "description": "The AI provider to use after GitHub Copilot. The order is fixed: Copilot, then this provider, then the build's built-in default (if any), then the free fallbacks. The API key is typed on the settings page and kept in VS Code's secret storage."
+        },
+        "i18nSync.ai.useCopilot": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use GitHub Copilot first when it is available (VS Code only). Turn off to skip Copilot and use your own provider."
+        },
+        "i18nSync.ai.allowFreeFallbacks": {
+          "type": "boolean",
+          "default": true,
+          "description": "When nothing else can translate, allow the free online fallbacks: a free anonymous AI service (OVHcloud AI Endpoints, EU) and Google Translate. Strings are sent to those services. Off: nothing leaves your machine except to the providers you chose."
+        },
+        "i18nSync.ai.copilotModel": {
+          "type": "string",
+          "default": "included",
+          "description": "Which Copilot model to use: \"included\" (models normally not charged as premium requests on paid plans, e.g. GPT-4.1), \"best\" (prefers Claude / GPT-5; may use premium requests), or part of a model name such as \"claude-sonnet\"."
+        },
+        "i18nSync.ai.reviewPass": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send each batch to the model a second time to proofread the draft (more accurate, one extra request per batch)."
+        },
+        "i18nSync.ai.endpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the \"custom\" provider (an OpenAI-compatible server, e.g. https://api.groq.com/openai/v1), or the address of Ollama when it is not http://127.0.0.1:11434."
+        },
+        "i18nSync.ai.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model name(s). Custom: required. Gemini and Groq: optional override of the built-in list. Ollama: optional, otherwise the best installed model is used. Several models can be listed, separated by commas; they share the key and the next one is used when one is limited."
+        },
+        "i18nSync.memory.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reuse translations that already exist in the destination repo when exactly the same base-language text appears again (free and consistent). Unconfirmed machine translations are never reused."
         }
       }
-    }
+    },
+    "menus": {
+      "scm/title": [
+        {
+          "command": "i18nSync.syncDestination",
+          "when": "scmProvider == git",
+          "group": "navigation@90"
+        }
+      ]
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": [
+          "i18n-context.json",
+          "*.i18n-context.json"
+        ],
+        "url": "./schemas/i18n-context.schema.json"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
@@ -114,28 +292,22 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "package": "npm run check-types && npm run lint && node esbuild.js --production",
-    "compile-tests": "tsc -p . --outDir out",
-    "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "npm run check-types:test && npm run test:unit",
+    "test:unit": "node test/run.mjs",
+    "check-types:test": "tsc -p test/tsconfig.json",
+    "test:vscode": "node test/vscode/runner.cjs"
   },
   "devDependencies": {
-    "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
     "@types/vscode": "^1.90.0",
-    "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
     "esbuild": "^0.28.1",
     "eslint": "^10.5.0",
     "npm-run-all": "^4.1.5",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.1"
-  },
-  "overrides": {
-    "diff": "^8.0.4",
-    "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
     "jsonc-parser": "^3.3.1"
@@ -149,5 +321,33 @@
     "url": "https://github.com/spharshid/Translation-Key-Sync/issues"
   },
   "homepage": "https://github.com/spharshid/Translation-Key-Sync#readme",
-  "license": "MIT"
+  "license": "MIT",
+  "keywords": [
+    "i18n",
+    "l10n",
+    "localization",
+    "internationalization",
+    "translation",
+    "translate",
+    "locale",
+    "locales",
+    "json",
+    "ai",
+    "copilot",
+    "gpt",
+    "claude",
+    "llm",
+    "glossary",
+    "terminology",
+    "sync",
+    "react-i18next",
+    "i18next",
+    "vue-i18n",
+    "multilingual",
+    "git",
+    "commit",
+    "machine translation",
+    "auto translate",
+    "translation memory"
+  ]
 }

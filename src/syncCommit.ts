@@ -1,26 +1,37 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { Destination, isInside, targetsOf } from './destinations';
 import { changedFiles, jsonAt } from './git';
 import type { PendingStore } from './pending';
-import { Change, countStrings, detectFormat, diffJson, syncFileToLocale, SyncStats } from './sync';
-import { Translator } from './translator';
+import { hashValue, Snapshot, SnapshotStore } from './snapshot';
+import { Change, countStrings, detectFormat, diffJson, newStats, syncFileToLocale, SyncStats, valueAt } from './sync';
+import type { TranslationService } from './translation';
 
 export interface SyncConfig {
+	/** the folder with the base-language files that changes are read from */
 	sourceDir: string;
-	targetDir: string;
+	/** where changes are written (already narrowed to the ones used for this run) */
+	destinations: Destination[];
 	locales: string[];
 	sourceLocale: string;
 }
 
-interface Job {
+export interface Job {
 	rel: string;
 	changes: Change[];
 	allKeys: Change[];
 	format: ReturnType<typeof detectFormat>;
+	sourceDoc: unknown;
+}
+
+export interface SyncDeps {
+	makeService: (expectedStrings: number) => Promise<TranslationService>;
+	pending?: PendingStore;
+	snapshots?: SnapshotStore;
 }
 
 /** Locale files that changed between two commits (from..to) under sourceDir, with their key-level changes. */
-export async function collectJobs(
+async function collectJobs(
 	cfg: SyncConfig,
 	gitPath: string,
 	repoRoot: string,
@@ -54,57 +65,76 @@ export async function collectJobs(
 		} catch {
 			// not on disk (e.g. syncing an older commit): the committed text is the best we have
 		}
-		jobs.push({ rel, changes, allKeys, format: detectFormat(formatSource) });
+		jobs.push({ rel, changes, allKeys, format: detectFormat(formatSource), sourceDoc: neu.doc });
 	}
 	return jobs;
 }
 
-/** Sync every locale file changed between two commits (from..to) under sourceDir. */
+/** Skip keys already translated for exactly this source text (recorded in the snapshot) and present in the target. */
+export function upToDateCheck(snapshot?: Snapshot) {
+	return async (rel: string, c: Change, targetDoc: unknown): Promise<boolean> => {
+		if (!snapshot) {
+			return false;
+		}
+		if ((await snapshot.get(rel, c.path)) !== hashValue(c.value)) {
+			return false;
+		}
+		const tv = valueAt(targetDoc, c.path);
+		return typeof tv === 'string' ? tv.trim() !== '' : tv !== undefined;
+	};
+}
+
+/** Sync every locale file changed between two commits (from..to) under sourceDir into every destination. */
 export async function syncCommit(
 	cfg: SyncConfig,
-	deps: { makeTranslator: (expectedStrings: number) => Translator; pending?: PendingStore },
+	deps: SyncDeps,
 	gitPath: string,
 	repoRoot: string,
 	from: string,
 	to: string,
 	log: (m: string) => void,
 ): Promise<SyncStats> {
-	const stats: SyncStats = { written: 0, files: 0, pending: 0, created: 0, verified: 0 };
+	const stats = newStats();
+	const targetsFor = (rel: string) =>
+		cfg.destinations.flatMap((dest) => targetsOf(dest, cfg.locales, cfg.sourceLocale, rel, path.join(cfg.sourceDir, rel)).map((t) => ({ ...t, dest })));
 	const jobs = (await collectJobs(cfg, gitPath, repoRoot, from, to, log)).filter((j) => {
-		const needed =
-			j.changes.length > 0 ||
-			cfg.locales.some((l) => !fs.existsSync(path.join(cfg.targetDir, l, j.rel)));
+		const needed = j.changes.length > 0 || targetsFor(j.rel).some((t) => !fs.existsSync(t.file));
 		if (!needed) {
 			log(`${j.rel}: no key changes`);
 		}
 		return needed;
 	});
 
-	const targets = cfg.locales.filter((l) => l !== cfg.sourceLocale);
-	const expected = jobs.reduce((n, j) => {
-		return (
+	const expected = jobs.reduce(
+		(n, j) =>
 			n +
-			targets.reduce((m, l) => {
-				const missing = !fs.existsSync(path.join(cfg.targetDir, l, j.rel));
-				return m + countStrings((missing ? j.allKeys : j.changes).map((c) => c.value));
-			}, 0)
-		);
-	}, 0);
-	const translator = deps.makeTranslator(expected);
-	await translator.prepare();
-	log(`${jobs.length} file(s) to sync, about ${expected} string(s) to translate`);
+			targetsFor(j.rel)
+				.filter((t) => t.locale !== cfg.sourceLocale)
+				.reduce((m, t) => m + countStrings((fs.existsSync(t.file) ? j.changes : j.allKeys).map((c) => c.value)), 0),
+		0,
+	);
+	const service = await deps.makeService(expected);
+	log(`${jobs.length} file(s) to sync into ${cfg.destinations.length} destination(s), about ${expected} string(s) to translate`);
 
 	for (const job of jobs) {
 		log(`${job.rel}: ${job.changes.length} changed key(s)`);
-		for (const locale of cfg.locales) {
-			await syncFileToLocale(
-				{ translator, log, stats, pending: deps.pending },
-				path.join(cfg.targetDir, locale, job.rel),
-				job.changes,
-				job.allKeys,
-				job.format,
-				locale,
-			);
+		for (const t of targetsFor(job.rel)) {
+			const ctx = { service, sourceLocale: cfg.sourceLocale, log, stats, pending: deps.pending, isUpToDate: upToDateCheck(deps.snapshots?.scope(t.dest.path)) };
+			await syncFileToLocale(ctx, {
+				rel: job.rel,
+				targetFile: t.file,
+				changes: job.changes,
+				allKeys: job.allKeys,
+				sourceFormat: job.format,
+				sourceDoc: job.sourceDoc,
+				locale: t.locale,
+			});
+		}
+		// every key of this file is now synced from its current text (not into a destination where a file was skipped: it still needs this change)
+		for (const dest of cfg.destinations) {
+			if (!stats.issues.some((i) => i.rel === job.rel && isInside(dest.path, i.file))) {
+				await deps.snapshots?.scope(dest.path).update(job.rel, [...job.allKeys, ...job.changes.filter((c) => c.deleted)]);
+			}
 		}
 	}
 	return stats;

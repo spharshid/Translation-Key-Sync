@@ -1,19 +1,29 @@
 import * as fs from 'fs/promises';
+import * as path from 'path';
 import { applyEdits, modify, parse } from 'jsonc-parser';
+import { dottedPath } from './ai/refs';
 import { detectFormat, KeyPath } from './sync';
-import { Translator } from './translator';
+import type { TranslationService } from './translation';
 
-/** A string that was written to a locale file in English because no provider could translate it in time. */
+/**
+ * A string that is not in its final state yet:
+ *  english  no translator worked in time, the English text was written as a placeholder
+ *  lowconf  only machine translation was available; it was written, and an AI model should redo it when it can
+ */
 export interface PendingEntry {
 	file: string;
 	path: KeyPath;
-	/** the English text that was written as a placeholder */
+	/** the source-language text */
 	text: string;
 	locale: string;
 	since: number;
+	kind?: 'english' | 'lowconf';
+	/** the value we wrote; the entry only applies while the file still holds exactly this */
+	written?: string;
 }
 
 const same = (a: PendingEntry, b: PendingEntry) => a.file === b.file && JSON.stringify(a.path) === JSON.stringify(b.path);
+export const writtenOf = (e: PendingEntry) => e.written ?? e.text;
 
 /** Small JSON-file-backed list, kept in the extension's global storage so it survives restarts. */
 export class PendingStore {
@@ -34,7 +44,7 @@ export class PendingStore {
 	}
 
 	private async save() {
-		await fs.mkdir(this.file.replace(/[\\/][^\\/]*$/, ''), { recursive: true });
+		await fs.mkdir(path.dirname(this.file), { recursive: true });
 		await fs.writeFile(this.file, JSON.stringify(this.list, null, 2), 'utf8');
 	}
 
@@ -87,19 +97,26 @@ function valueAt(doc: unknown, p: KeyPath): unknown {
 	return cur;
 }
 
+export interface RetryResult {
+	fixed: number;
+	dropped: number;
+	remaining: number;
+}
+
 /**
- * Try again for every pending string. A string is only replaced if the file still holds the English placeholder we
- * wrote; if someone has edited or removed it since, the entry is just dropped.
+ * Try again for every queued string.
+ *  - A string is only touched while the file still holds exactly what we wrote; if someone has edited or removed it
+ *    since, the entry is dropped and their text is left alone.
+ *  - "english" entries accept any translation (the AI result is final; a machine result is better than English but
+ *    stays queued for an AI redo).
+ *  - "lowconf" entries are only replaced by an AI result.
  */
-export async function retryPending(
-	store: PendingStore,
-	translator: Translator,
-	log: (m: string) => void,
-): Promise<{ fixed: number; dropped: number; remaining: number }> {
+export async function retryPending(store: PendingStore, service: TranslationService, log: (m: string) => void): Promise<RetryResult> {
 	const entries = await store.all();
 	let fixed = 0;
 	let dropped = 0;
 	const finished: PendingEntry[] = [];
+	const updated: PendingEntry[] = [];
 
 	const byFile = new Map<string, PendingEntry[]>();
 	for (const e of entries) {
@@ -121,31 +138,58 @@ export async function retryPending(
 			raw = raw.slice(1);
 		}
 		const fmt = detectFormat(raw);
-		let updated = raw;
+		const doc = parse(raw);
+
+		const live: PendingEntry[] = [];
 		for (const e of list) {
-			if (valueAt(parse(updated), e.path) !== e.text) {
+			if (valueAt(doc, e.path) !== writtenOf(e)) {
 				dropped++; // changed by someone else (or removed): leave it alone
 				finished.push(e);
-				continue;
+			} else {
+				live.push(e);
 			}
-			const r = await translator.translate(e.text, e.locale);
-			if (r.fellBack) {
-				continue; // still not possible, stays queued
-			}
-			updated = applyEdits(
-				updated,
-				modify(updated, e.path, r.value, {
-					formattingOptions: { eol: fmt.eol, insertSpaces: fmt.insertSpaces, tabSize: fmt.tabSize },
-				}),
-			);
-			fixed++;
-			finished.push(e);
-			log(`[${e.locale}] translated pending ${e.path.join('.')} in ${file}`);
 		}
-		if (updated !== raw) {
-			await fs.writeFile(file, bom + updated, 'utf8');
+
+		let text = raw;
+		for (const locale of new Set(live.map((e) => e.locale))) {
+			const group = live.filter((e) => e.locale === locale);
+			const aiOnly = group.every((e) => e.kind === 'lowconf');
+			if (aiOnly && !service.aiAvailable) {
+				continue; // nothing could improve these right now
+			}
+			const items = group.map((e, i) => ({ id: `p${i}`, text: e.text, keyPath: dottedPath(e.path) }));
+			const res = await service.translateBatch({ locale, file: path.basename(file), items, refs: [], aiOnly });
+			for (const [i, e] of group.entries()) {
+				const r = res.get(`p${i}`);
+				if (!r || r.origin === 'english') {
+					continue; // still not possible, stays queued
+				}
+				if (r.origin === 'classic' && e.kind === 'lowconf') {
+					continue;
+				}
+				text = applyEdits(
+					text,
+					modify(text, e.path, r.value, { formattingOptions: { eol: fmt.eol, insertSpaces: fmt.insertSpaces, tabSize: fmt.tabSize } }),
+				);
+				log(`[${locale}] translated pending ${dottedPath(e.path)} in ${path.basename(file)} (${r.origin})`);
+				if (r.origin === 'ai') {
+					fixed++;
+					finished.push(e);
+				} else if (service.aiIntended) {
+					updated.push({ ...e, kind: 'lowconf', written: r.value }); // better than English, still queued for the AI
+				} else {
+					fixed++;
+					finished.push(e);
+				}
+			}
+		}
+		if (text !== raw) {
+			await fs.writeFile(file, bom + text, 'utf8');
 		}
 	}
 	await store.remove(finished);
+	if (updated.length) {
+		await store.add(updated);
+	}
 	return { fixed, dropped, remaining: entries.length - finished.length };
 }

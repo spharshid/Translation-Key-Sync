@@ -49,7 +49,7 @@ export async function changedFiles(
 }
 
 /** Raw text of a file at a ref (BOM stripped), or null if it does not exist there. */
-export async function rawAt(gitPath: string, cwd: string, ref: string, relFile: string): Promise<string | null> {
+async function rawAt(gitPath: string, cwd: string, ref: string, relFile: string): Promise<string | null> {
 	try {
 		return (await git(gitPath, cwd, ['show', `${ref}:${relFile}`])).replace(/^﻿/, '');
 	} catch {

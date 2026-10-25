@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "i18n context file",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "_help": {},
+    "ai": {
+      "type": "object",
+      "description": "Optional AI endpoint and model, shared through this file. Never put the API key here: each developer sets it once in the extension.",
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "description": "OpenAI-compatible base URL, e.g. https://api.groq.com/openai/v1"
+        },
+        "model": {
+          "type": "string",
+          "description": "One model, or several separated by commas (they share the key but usually have separate allowances)."
+        }
+      }
+    },
+    "appContext": {
+      "type": "string",
+      "description": "What the product is and who uses it."
+    },
+    "style": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": "string"
+        },
+        "locales": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-language style rules, keyed by locale code."
+        }
+      }
+    },
+    "glossary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "term"
+        ],
+        "properties": {
+          "term": {
+            "type": "string",
+            "description": "The word or phrase as it appears in the English text."
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Other spellings that mean the same: plurals, variants."
+          },
+          "meaning": {
+            "type": "string",
+            "description": "What the term means in your product, in plain words, and what it is not. Optional, but it is what the translator uses for languages where you gave no approved word."
+          },
+          "translations": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Optional. Approved translation per locale, in dictionary form. A language without one still gets the meaning."
+          },
+          "avoid": {
+            "type": "object",
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "description": "Optional. Per locale, wrong-sense words that must not be used for this term, usually the literal translation."
+          }
+        }
+      }
+    },
+    "doNotTranslate": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "required": [
+              "term"
+            ],
+            "properties": {
+              "term": {
+                "type": "string"
+              },
+              "translations": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Optional spelling per locale (transliteration)."
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

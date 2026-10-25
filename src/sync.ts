@@ -1,8 +1,11 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { applyEdits, modify, parse, ParseError } from 'jsonc-parser';
+import type { PromptItem } from './ai/prompt';
+import { dottedPath, pickReferences } from './ai/refs';
+import { addIssue, Issue, jsonProblem, structureProblem } from './issues';
 import type { PendingEntry, PendingStore } from './pending';
-import { Translator } from './translator';
+import type { TranslationService } from './translation';
 
 export type KeyPath = (string | number)[];
 export interface Change {
@@ -64,32 +67,47 @@ export function detectFormat(text: string): Format {
 export interface SyncStats {
 	written: number;
 	files: number;
-	/** strings that could not be translated in time: written in English and queued for retry */
+	/** strings no translator could handle in time: English was written and queued */
 	pending: number;
+	/** strings written from machine translation only (queued for an AI redo when AI is configured) */
+	machine: number;
 	created: number;
 	/** keys re-read from disk after writing and found correct */
 	verified: number;
+	/** keys left alone because they were already translated from the same text */
+	skipped: number;
+	/** strings filled from an existing approved translation of the same text */
+	reused: number;
+	/** files and keys that were left untouched because their content is broken */
+	issues: Issue[];
 }
 
+export const newStats = (): SyncStats => ({ written: 0, files: 0, pending: 0, machine: 0, created: 0, verified: 0, skipped: 0, reused: 0, issues: [] });
+
 export interface SyncCtx {
-	translator: Translator;
+	service: TranslationService;
+	sourceLocale: string;
 	log: (m: string) => void;
 	stats: SyncStats;
 	pending?: PendingStore;
+	/** true when this key is already translated for exactly this source text, so it can be left alone */
+	isUpToDate?: (rel: string, change: Change, targetDoc: unknown) => Promise<boolean>;
 }
 
-async function mapLimit<T>(items: T[], limit: number, fn: (t: T) => Promise<void>) {
-	let i = 0;
-	await Promise.all(
-		Array.from({ length: Math.min(limit, items.length) }, async () => {
-			while (i < items.length) {
-				await fn(items[i++]);
-			}
-		}),
-	);
+export interface FileJob {
+	/** path of the file relative to the locale folder, e.g. "common.json" or "admin/menu.json" */
+	rel: string;
+	targetFile: string;
+	changes: Change[];
+	/** every key of the source file: used to create the target file when it does not exist yet */
+	allKeys: Change[];
+	sourceFormat: Format;
+	/** the parsed source-language file (used to find approved translations to show the model) */
+	sourceDoc: unknown;
+	locale: string;
 }
 
-/** Number of strings that will need translating for these changes (used to pick a provider strategy). */
+/** Number of strings that will need translating for these changes (used to estimate the work). */
 export function countStrings(v: unknown): number {
 	if (typeof v === 'string') {
 		return v.trim() ? 1 : 0;
@@ -97,7 +115,7 @@ export function countStrings(v: unknown): number {
 	return Array.isArray(v) ? v.reduce<number>((n, x) => n + countStrings(x), 0) : 0;
 }
 
-function valueAt(doc: unknown, p: KeyPath): unknown {
+export function valueAt(doc: unknown, p: KeyPath): unknown {
 	let cur: any = doc;
 	for (const k of p) {
 		if (cur === null || typeof cur !== 'object' || !(k in cur)) {
@@ -126,17 +144,12 @@ export async function verifyFile(targetFile: string, expected: Map<Change, unkno
 
 /**
  * Apply source changes for one file to one locale's copy, editing in place so formatting is preserved.
- * If the target file does not exist it is created from `allKeys` (every key of the source file), formatted like the source.
+ * If the target file does not exist it is created from `allKeys`, formatted like the source.
+ * Returns the changes that were applied (the caller records them in the snapshot).
  */
-export async function syncFileToLocale(
-	ctx: SyncCtx,
-	targetFile: string,
-	changes: Change[],
-	allKeys: Change[],
-	sourceFormat: Format,
-	locale: string,
-): Promise<void> {
-	const { translator, log, stats } = ctx;
+export async function syncFileToLocale(ctx: SyncCtx, job: FileJob): Promise<Change[]> {
+	const { service, log, stats } = ctx;
+	const { targetFile, locale } = job;
 	let raw: string;
 	let bom = '';
 	let existed = true;
@@ -148,35 +161,88 @@ export async function syncFileToLocale(
 		}
 	} catch {
 		existed = false;
-		raw = '{}' + (sourceFormat.finalNewline ? sourceFormat.eol : '');
+		raw = '{}' + (job.sourceFormat.finalNewline ? job.sourceFormat.eol : '');
 	}
-	const fmt = existed ? detectFormat(raw) : sourceFormat;
-	const work = existed ? changes : allKeys;
+	if (existed && !raw.trim()) {
+		raw = '{}' + (job.sourceFormat.finalNewline ? job.sourceFormat.eol : ''); // an empty file counts as an empty object
+	}
+	const base = { file: targetFile, rel: job.rel, locale };
+	const bad = existed ? jsonProblem(raw) : undefined;
+	if (bad) {
+		// never write into a file that is not valid JSON: it would stay broken, and the rest of the sync must go on
+		addIssue(stats.issues, { ...base, kind: 'invalid-json', message: bad.message, line: bad.line });
+		log(`[${locale}] skip ${job.rel}: not valid JSON (line ${bad.line}: ${bad.message}); the file was not touched`);
+		return [];
+	}
+	const fmt = existed ? detectFormat(raw) : job.sourceFormat;
+	const targetDoc = existed ? parse(raw) : null;
 
-	// translate (a few at a time), then apply the edits in order
+	const work: Change[] = [];
+	for (const c of existed ? job.changes : job.allKeys) {
+		const clash = existed && !c.deleted ? structureProblem(targetDoc, c.path) : undefined;
+		if (clash) {
+			addIssue(stats.issues, { ...base, kind: 'structure', message: clash, key: dottedPath(c.path) });
+			log(`[${locale}] skip ${dottedPath(c.path)} in ${job.rel}: ${clash}`);
+			continue;
+		}
+		if (existed && !c.deleted && locale !== ctx.sourceLocale && (await ctx.isUpToDate?.(job.rel, c, targetDoc))) {
+			stats.skipped++;
+			continue;
+		}
+		work.push(c);
+	}
+
+	// every string that needs translating goes out as one batch with its key path and nearby approved translations
+	const items: PromptItem[] = [];
+	const idOf = new Map<string, string>();
+	const collect = (v: unknown, ci: number, at: KeyPath) => {
+		if (typeof v === 'string') {
+			const id = `s${items.length}`;
+			idOf.set(`${ci}|${JSON.stringify(at)}`, id);
+			items.push({ id, text: v, keyPath: dottedPath(at) });
+		} else if (Array.isArray(v)) {
+			v.forEach((x, i) => collect(x, ci, [...at, i]));
+		}
+	};
+	if (locale !== ctx.sourceLocale) {
+		work.forEach((c, ci) => !c.deleted && collect(c.value, ci, c.path));
+	}
+	const results = items.length
+		? await service.translateBatch({
+				locale,
+				file: job.rel,
+				items,
+				refs: pickReferences(job.sourceDoc, targetDoc, items),
+			})
+		: new Map();
+
 	const translated = new Map<Change, unknown>();
 	const pending: PendingEntry[] = [];
-	const translateValue = async (v: unknown, c: Change, at: KeyPath): Promise<unknown> => {
+	const build = (v: unknown, ci: number, at: KeyPath): unknown => {
 		if (typeof v === 'string') {
-			const r = await translator.translate(v, locale);
-			if (r.fellBack) {
+			const r = results.get(idOf.get(`${ci}|${JSON.stringify(at)}`) ?? '');
+			if (!r) {
+				return v;
+			}
+			if (r.origin === 'memory') {
+				stats.reused++;
+			} else if (r.origin === 'english') {
 				stats.pending++;
-				pending.push({ file: targetFile, path: at, text: v, locale, since: Date.now() });
-				log(`[${locale}] ${at.join('.')} could not be translated yet; wrote English and queued it for retry`);
+				pending.push({ file: targetFile, path: at, text: v, locale, since: Date.now(), kind: 'english', written: v });
+				log(`[${locale}] ${dottedPath(at)} could not be translated yet; wrote English and queued it for retry`);
+			} else if (r.origin === 'classic' && service.aiIntended) {
+				stats.machine++;
+				pending.push({ file: targetFile, path: at, text: v, locale, since: Date.now(), kind: 'lowconf', written: r.value });
+			}
+			if (r.warnings.length) {
+				log(`[${locale}] ${dottedPath(at)}: ${r.warnings.join('; ')}`);
 			}
 			return r.value;
 		}
-		if (Array.isArray(v)) {
-			const out: unknown[] = [];
-			for (const [i, x] of v.entries()) {
-				out.push(await translateValue(x, c, [...at, i]));
-			}
-			return out;
-		}
-		return v; // numbers, booleans, null are language independent
+		return Array.isArray(v) ? v.map((x, i) => build(x, ci, [...at, i])) : v;
 	};
-	await mapLimit(work, 4, async (c) => {
-		translated.set(c, c.deleted ? undefined : await translateValue(c.value, c, c.path));
+	work.forEach((c, ci) => {
+		translated.set(c, c.deleted ? undefined : locale === ctx.sourceLocale ? c.value : build(c.value, ci, c.path));
 	});
 
 	let updated = raw;
@@ -203,4 +269,5 @@ export async function syncFileToLocale(
 	if (work.length) {
 		stats.verified += await verifyFile(targetFile, translated);
 	}
+	return work;
 }
