@@ -227,7 +227,7 @@
             "A model running on this computer under Ollama",
             "Any OpenAI-compatible server (base URL, model and key)"
           ],
-          "description": "The AI provider to use after GitHub Copilot. The order is fixed: Copilot, then this provider, then the build's built-in default (if any), then the free fallbacks. The API key is typed on the settings page and kept in VS Code's secret storage."
+          "description": "The AI provider to use after GitHub Copilot. The order is fixed: Copilot, then this provider, then the free fallbacks. The API key is typed on the settings page and kept in VS Code's secret storage."
         },
         "i18nSync.ai.useCopilot": {
           "type": "boolean",

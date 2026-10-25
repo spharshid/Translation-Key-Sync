@@ -80,7 +80,7 @@ function noticeMachine(count: number, s: Settings) {
 	lastMachineNotice = Date.now();
 	void vscode.window
 		.showWarningMessage(
-			`${NAME}: ${count} string(s) were translated with machine translation because no AI model was available, so they are lower quality. They are queued and redone automatically when an AI model becomes available. If your team shares one office network, the free AI service is shared by everyone on it (2 requests/min per model): pick an AI provider with a free key of your own in the settings (Translation). Or improve them now with the AI chat you already use.`,
+			`${NAME}: ${count} string(s) were translated with machine translation because no AI model was available, so they are lower quality. They are queued and redone automatically when an AI model becomes available. The free fallbacks are shared by everyone on the same network and can be slow: pick an AI provider with a free key of your own in the settings (Translation). Or improve them now with the AI chat you already use.`,
 			'Improve with my AI chat',
 			'Test AI Translation',
 		)

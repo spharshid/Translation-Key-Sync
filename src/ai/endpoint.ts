@@ -1,6 +1,6 @@
 import type { ContextFile } from '../context';
 
-/** What the user picks in the settings. "auto" = nothing of their own: Copilot, the built-in default and the free fallbacks. */
+/** What the user picks in the settings. "auto" = nothing of their own: Copilot and the free fallbacks. */
 export type ProviderId = 'auto' | 'gemini' | 'groq' | 'ollama' | 'custom';
 
 export const OLLAMA_ADDRESS = 'http://127.0.0.1:11434';

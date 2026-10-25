@@ -7,7 +7,8 @@ Keeps the language folders of a translation repo in step with your strings, and 
   same file, your glossary and your tone rules. Answers are checked (placeholders, script, untranslated English, approved
   terms) and corrected automatically before they are written.
 - **Free, in any editor, no key.** Automatic AI runs on the GitHub Copilot you already have (VS Code) or, in any editor, on a free
-  AI service that needs no account (on by default, one checkbox turns it off). Your own Gemini or Groq key, a local Ollama model and a paste-into-any-chat route are there too.
+  AI service that needs no account (on by default; one checkbox turns it off). Your own Gemini or Groq key, a local Ollama model and
+  a paste-into-any-chat route are there too.
 - **One source, destinations you tick.** Pick the folder strings come from and add the folders they go to: a translation repo's
   language folders (translated) and/or another repo's fallback copy (copied as it is). Tick what each sync should include, and
   choose per batch when more than one is ticked.
@@ -42,8 +43,8 @@ Translation Status: what is not translated yet, what is waiting for a translator
 1. Click **i18n Sync: set up** in the status bar (or run **i18n AI Translate & Sync: Configure**).
 2. Choose the **source folder** and the **base language**.
 3. Add the **destinations** (tick the ones to use), then click **Detect from the first translate destination** for the languages.
-4. Click **Test AI translation** once: it shows which engines are available and, in VS Code, asks permission to use Copilot. In editors
-   without Copilot it asks whether the free AI service may be used.
+4. In *Translation*, press **Test**: it translates a few sample strings with whatever is in use (the line above it says what that
+   is). In VS Code the first time, VS Code asks to allow the extension to use Copilot.
 5. Optional but recommended: **Create from template** in *Context file* and fill in your glossary. **Save**.
 
 | Setting | Example |
@@ -105,81 +106,53 @@ already has a translation in the destination (and the wording is unambiguous), i
 
 An optional **proofreading pass** sends drafts back to the model for review (on by default; one extra request per batch).
 
-## Which AI is used, in any editor, with no key
+## Which AI is used
 
-The order is fixed, nothing to arrange. The extension uses the first of these that works:
+The order is fixed, there is nothing to arrange. The extension uses the first of these that works:
 
-1. **GitHub Copilot**, automatically, when VS Code has it. There is nothing to configure.
+1. **GitHub Copilot**, automatically, when VS Code has it. Nothing to configure.
 2. **Your own provider**, if you chose one on the settings page (*Translation → AI provider*): **Google Gemini** or **Groq** (paste a
-   free key), **Ollama** (a model on your computer; the installed models are listed), or **Custom** (any OpenAI-compatible server:
+   free key), **Ollama** (a model on your computer; the installed models are listed) or **Custom** (any OpenAI-compatible server:
    base URL, model, key). The key is kept in VS Code's secret storage on your machine.
-3. **The build's built-in default**, if the build you installed has one (it is never shown).
-4. **Free fallbacks** that need no account and no key, on by default (*Advanced → Allow free online fallbacks*):
-   a free AI service, [OVHcloud AI Endpoints](https://www.ovhcloud.com/en/public-cloud/ai-endpoints/) (EU), which works in **every
-   editor** (VS Code, Cursor, Trae, Antigravity, ...) because it is a plain web request; then **machine translation** (lower
-   quality): **Google** first (two endpoints, strings packed into a few requests, paced, your glossary and kept names applied),
-   then the Hugging Face Space. Those strings are queued and redone by an AI automatically.
+3. **Free fallbacks**, on by default (*Advanced → Allow free online fallbacks*): a free AI service that needs no account or key
+   ([OVHcloud AI Endpoints](https://www.ovhcloud.com/en/public-cloud/ai-endpoints/), EU), then machine translation (lower quality):
+   Google first, then the Hugging Face Space. Strings that only got machine translation are queued and redone by an AI as soon as
+   one is available.
 
-The settings page shows one line, *Using now: ...*, with a **Test** button, so you can see which one is translating.
+The settings page shows one line, *Using now: ...*, with a **Test** button.
 
 | | VS Code (+ Copilot) | Cursor, Trae, Antigravity, other forks |
 |---|---|---|
-| GitHub Copilot | **Yes** | No (not available there; Cursor does not expose its models to extensions; Trae and Antigravity unverified) |
-| **Free fallbacks, no key** | **Yes** | **Yes, automatic** |
-| Local model (Ollama) | Yes | Yes |
-| Your own provider (Gemini, Groq, Ollama, custom; a key from you) | Yes | Yes |
+| GitHub Copilot | **Yes** | Not available there, as far as we know |
+| Free fallbacks, no key | **Yes** | **Yes** |
+| Your own provider (Gemini, Groq, Ollama, custom) | Yes | Yes |
 | **Improve with my AI chat** (paste a prompt into any chat AI) | Yes | Yes |
 | Translation memory, glossary, validation, both ways of syncing | Yes | Yes |
 
-### What to expect from the free service
+### The free fallbacks
 
-- **Quality.** It serves large open models (for example gpt-oss-120b, Qwen3.5-397B, Mistral-Small, Llama-3.3-70B). On the same
-  UI strings in Spanish, Slovenian, Arabic and Tamil, their output was far better than the machine translators, and the
-  glossary term came out correctly inflected in Tamil. Every answer still goes through the same checks, so a bad one is
-  corrected or rejected.
-- **Speed.** Anonymous use is limited to **2 requests per minute per model** (per IP). The extension paces itself and rotates
-  across models, so a small commit finishes within a minute or two and a large one in several. Models take roughly 5-90 seconds
-  per request. Work continues in the background; anything not finished in time is written in English, queued and finished later.
-- **Shared networks.** The limit is per IP address, so a whole office behind one address shares it. Give each developer a free key of their own (see
-  *A team on one office network* below).
-- **Best effort.** It is an anonymous tier that the provider can change or withdraw. If it stops working the extension falls
-  back to the next option and queues what is left; the *Improve with my AI chat* route always works.
-- **Privacy.** The strings, their key paths and any glossary terms are sent to OVHcloud over HTTPS. Untick *Allow free online
-  fallbacks* (Advanced, or `i18nSync.ai.allowFreeFallbacks`) if that is not acceptable for your content.
+- **Best effort.** The providers can limit, slow down or withdraw anonymous access. When that happens the extension moves on to the
+  next option and queues what is left; *Improve with my AI chat* always works.
+- **Shared.** They are shared by everyone on the same network, so they can be slow when several developers sync at once. A personal
+  key (below) avoids that.
+- **Privacy.** The strings, their key paths and any glossary terms are sent to OVHcloud (the AI service) or to Google (machine
+  translation) over HTTPS. Untick *Allow free online fallbacks* (Advanced, or `i18nSync.ai.allowFreeFallbacks`) if that is not
+  acceptable for your content.
 
-Other keyless services were tested and not used: Pollinations' anonymous tier is a single small model at one request per 15
-seconds and 20-70 seconds per answer, and LLM7's free tier ran out of its daily quota after one request.
+### Using it in a team
 
-### A team on one office network
+- With Copilot there is nothing to set up.
+- Without it, each developer can paste a free Gemini key (Google AI Studio: a Google account, no card; the settings page has a
+  **Get a free Gemini key** button). Allowances are per project and per model, so every developer's own key has its own allowance and
+  no key is shared. The Gemini choice lists several models and moves to the next one when a model is limited or overloaded (the
+  list can be overridden under *Advanced*).
+- To give everybody the same endpoint and model without typing them, put an `"ai": { "endpoint": "...", "model": "a, b, c" }`
+  section in the shared context file. Never put the key there: each person adds their own.
+- Check yourself: on Google's free tier prompts may be used to improve its products (read the current terms), the exact limits are
+  shown in your AI Studio account and can change, and **Check Translation Quality** scores the result against translations you have
+  already approved.
 
-The built-in free service is limited per **network address** (2 requests per minute per model), and a whole office shares one
-address, so it suits individuals, not a team. What scales is a key whose allowance belongs to a *person or project* instead of the
-wifi. (GitHub Models, which used to fit this, was retired in July 2026.)
-
-**Recommended when no payment method is possible: one free Gemini key per developer.**
-
-- Each developer creates a free key in Google AI Studio (a Google account, no card, about a minute; the settings screen has a
-  **Get a free Gemini key** button), then pastes it into the settings page (*Translation → Google Gemini*). Allowances are per project and per model, so every developer's own key
-  has its own allowance: nothing is shared and no key has to be passed around.
-- The Gemini choice already lists several models. Each has its own allowance, so the extension moves to the next one when a model
-  is rate limited, and leaves one alone for the day once its daily quota is gone (the list can be overridden under *Advanced*).
-- To give everybody the same setup without typing it, put an `"ai": { "endpoint": "...", "model": "a, b, c" }` section in the shared
-  context file. Never put the key there.
-- Things to check yourself: (1) on the free tier **Google may use prompts to improve its products**; (2) the exact free limits are shown
-  in your AI Studio account, are not guaranteed and can change; (3) accuracy on *your* strings: run **Check Translation Quality**, which
-  scores the engine against translations you have already approved.
-
-| Option | Cost | Limit that matters | Notes |
-|---|---|---|---|
-| **Gemini free key, one per developer** | free, no card | per project and per model | recommended; see above |
-| **GitHub Copilot** in VS Code | already licensed | per developer | no setup; VS Code only |
-| Groq free tier | free, no card | per organization: ~30 req/min, 1,000/day, 200,000 tokens/day | fine for a few syncs a day |
-| Cerebras free tier | free | per account | its terms forbid sharing a key: one key per person |
-| OVHcloud AI Endpoints with a key | pay per token (gpt-oss-120b: $0.09 / $0.47 per million input / output tokens) | 400 requests/min per model per project | needs a payment method; about a tenth of a cent per request |
-| Built-in free service (OVH, no key) | free | 2 req/min per model **per network address** | fine alone, too small for 15 people on one wifi |
-
-When a quota runs out, nothing is lost: strings are written with machine translation, queued, and redone with the AI automatically
-once it is available again.
+When a quota runs out nothing is lost: the strings are queued and finished later.
 
 ### Improve with my AI chat
 
@@ -187,10 +160,6 @@ For when nothing automatic is available (or you prefer a specific chat AI). Stri
 queued. Run the command, paste the one prompt it copies into any AI chat you already have (Claude, ChatGPT, Gemini, the IDE's own
 assistant), copy the whole JSON reply, and run **Apply AI Answer from Clipboard**. The reply goes through the same checks;
 anything that fails stays queued and a hand edit is never overwritten. Large queues come in batches of 40 strings.
-
-Free keyless **machine** translators are not accurate enough on their own: they drop sentences, leave strings in English and
-pick the wrong sense of a word (for example translating *Save* as "save money"), and Google's unofficial endpoint can be blocked for
-a whole network. That is why such results are queued for an AI redo instead of being treated as final.
 
 ### Choosing a Copilot model
 
@@ -203,15 +172,13 @@ a whole network. That is why such results are queued for an AI redo instead of b
 On the settings page choose *Custom* for any OpenAI-compatible server (base URL, model(s), key: for example
 `https://api.groq.com/openai/v1`, `https://openrouter.ai/api/v1`, `https://api.mistral.ai/v1`) or *Ollama* for a model on your
 computer (the installed models are listed; the address is under *Advanced* if it is not `127.0.0.1:11434`). The key is kept in
-VS Code's secret storage on your machine, one slot per provider. Free tiers and
-their limits change; check your provider.
+VS Code's secret storage on your machine, one slot per provider. Free tiers and their limits change; check your provider.
 
 ## Context file (glossary, tone, names)
 
 A translator that only sees the English word picks its most common meaning. In a product, words often mean something else: *Board*
-may be a page of cards in columns, not a wooden plank, and a *Release* may be a published version of the software, not the
-verb "to release". The context
-file tells the translator what your words mean here.
+may be a page of cards in columns, not a wooden plank, and a *Release* may be a published version of the software, not the verb
+"to release". The context file tells the translator what your words mean here.
 
 **Create Context File from Template** (settings page, step 4, or the command palette) writes `i18n-context.json` and a small JSON
 schema next to it for autocomplete. The template is only a convenience: the file is plain JSON, everything in it is optional,
@@ -301,17 +268,18 @@ the *Improve with my AI chat* route. The page refreshes by itself when a sync en
 ## Platforms
 
 Pure TypeScript with no native code: it runs on **macOS, Linux and Windows** wherever VS Code (or a fork) runs and `git` is
-installed. Folders may be written with `~/` on macOS/Linux. The automated tests run on all three systems in CI
-(`.github/workflows/test.yml`); the extension's Windows behaviour is additionally tested inside a real VS Code.
+installed. Folders may be written with `~/` on macOS/Linux. A GitHub Actions workflow (`.github/workflows/test.yml`) runs the
+tests on all three systems, and the extension is additionally tested inside a real VS Code.
 
 ## Privacy: what is sent where
 
 To translate, the extension sends the strings, their key paths, a few approved translations from the same file, the relevant
-glossary entries and your product description to the **AI you configured**: GitHub Copilot through VS Code, your endpoint, a local
-model, the free AI service (OVHcloud AI Endpoints, only after you allow it), or, with *Improve with my AI chat*, whatever chat you
-paste the prompt into. If it falls back to machine translation, individual strings go to Google's public translate endpoint or
-the configured Hugging Face Space. Set `i18nSync.ai.enabled` to false to stop using AI, or `i18nSync.ai.allowFreeFallbacks` to
-`false` to never use the free fallbacks. Do not use the extension on strings you may not send to these services.
+glossary entries and your product description to the **AI that is in use**: GitHub Copilot through VS Code, your own provider or
+local model, the free AI service (OVHcloud AI Endpoints, unless you untick *Allow free online fallbacks*), or, with *Improve with my
+AI chat*, whatever chat you paste the prompt into. If it falls back to machine translation, individual strings go to Google's public
+translate endpoint or the configured Hugging Face Space. Set `i18nSync.ai.enabled` to false to stop using AI, or
+`i18nSync.ai.allowFreeFallbacks` to false to never use the free fallbacks. Do not use the extension on strings you may not send to
+these services.
 
 ## Commands
 
