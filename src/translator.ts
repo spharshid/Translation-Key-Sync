@@ -39,6 +39,8 @@ const DEFAULT_TIMING: Timing = {
 };
 
 export interface TranslatorOptions {
+	/** the user stopped the run: loops end as if the time budget was spent (the caller then raises Cancelled) */
+	signal?: AbortSignal;
 	backendUrl: string;
 	/** override the Google endpoint (corporate proxy); empty = the built-in endpoints */
 	googleUrl?: string;
@@ -227,6 +229,11 @@ export class Translator {
 	private readonly deadline: number;
 	private readonly googleEndpoints: string[];
 	private announcedWake = false;
+
+	/** the time budget is spent, or the user stopped the run */
+	private get over(): boolean {
+		return Date.now() >= this.deadline || !!this.o.signal?.aborted;
+	}
 
 	constructor(
 		private readonly o: TranslatorOptions,
@@ -422,7 +429,7 @@ export class Translator {
 				groups.push(cur);
 			}
 			for (const g of groups) {
-				if (!this.googleAvailable() || Date.now() >= this.deadline) {
+				if (!this.googleAvailable() || this.over) {
 					break;
 				}
 				try {
@@ -512,7 +519,7 @@ export class Translator {
 		const order = this.providers(masked, lang);
 		let suspect: string | null = null; // backend answer we only use if Google cannot confirm it
 
-		while (Date.now() < this.deadline) {
+		while (!this.over) {
 			// the Space is only woken when it is the chosen provider or Google cannot be used right now
 			if (this.o.provider === 'backend' || !this.googleAvailable()) {
 				this.ensureWake();

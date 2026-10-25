@@ -2,7 +2,7 @@
   "name": "i18n-ai-translate-sync",
   "displayName": "i18n AI Translate & Sync",
   "description": "Keeps every locale file in sync and translates new or changed i18n strings with an AI model (GitHub Copilot or any OpenAI-compatible endpoint), using your product glossary for accurate, review-ready translations.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "icon": "images/icon.png",
   "engines": {
     "vscode": "^1.90.0"
@@ -39,9 +39,19 @@
       },
       {
         "command": "i18nSync.syncDestination",
-        "title": "Sync Locales (sync the source to the ticked destinations)",
+        "title": "Sync Locales (what changed in the source since the last commit, to the ticked destinations)",
         "category": "i18n AI Translate & Sync",
-        "icon": "$(globe)"
+        "icon": "$(repo-sync)"
+      },
+      {
+        "command": "i18nSync.syncAll",
+        "title": "Sync All Missing Keys (compare whole files, not only the changes since the last commit)",
+        "category": "i18n AI Translate & Sync"
+      },
+      {
+        "command": "i18nSync.stop",
+        "title": "Stop Translation (stop the work in progress)",
+        "category": "i18n AI Translate & Sync"
       },
       {
         "command": "i18nSync.testAi",

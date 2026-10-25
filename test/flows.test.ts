@@ -1,14 +1,15 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { LlmError } from '../src/ai/clients';
+import { LlmClient, LlmError } from '../src/ai/clients';
+import { Cancelled } from '../src/cancel';
 import { PendingStore, retryPending } from '../src/pending';
 import { Destination } from '../src/destinations';
 import { SnapshotStore } from '../src/snapshot';
 import { newStats } from '../src/sync';
 import { SyncConfig, syncCommit } from '../src/syncCommit';
-import { scanSource, syncFromSource } from '../src/syncSource';
+import { scanSource, SyncScope, syncFromSource } from '../src/syncSource';
 import { TranslationService } from '../src/translation';
-import { FakeClient, Stubs, aiClient, crlf, json, makeRepo, makeService, readJson, startStubs, tmp, R, W } from './fixtures';
+import { FakeClient, Stubs, aiClient, crlf, itemsIn, json, makeRepo, makeService, readJson, sh, startStubs, tmp, R, W } from './fixtures';
 import { assert, done, scenario } from './helper';
 
 const LOCALES = ['en', 'es', 'fr'];
@@ -47,8 +48,8 @@ const reverseCfg = (w: World, toFallback = false, toLocales = true): SyncConfig 
 	locales: LOCALES,
 	sourceLocale: 'en',
 });
-const reverse = (w: World, svc: TranslationService, toFallback = false) =>
-	syncFromSource(reverseCfg(w, toFallback), { makeService: async () => svc, pending: w.pending, snapshots: w.snapshots }, 'git', log);
+const reverse = (w: World, svc: TranslationService, toFallback = false, scope: SyncScope = 'all') =>
+	syncFromSource(reverseCfg(w, toFallback), { makeService: async () => svc, pending: w.pending, snapshots: w.snapshots }, 'git', log, scope);
 
 /** Destination repo with en/es/fr common.json committed; es also has a key that en lacks. */
 function seedDestination(w: World) {
@@ -335,6 +336,235 @@ function seedDestination(w: World) {
 		assert.ok(!fs.existsSync(path.join(process.cwd(), 'common.json')), 'nothing was written into the current folder');
 	});
 
+	// ---------------------------------------------------------------- Sync Locales: only what changed since the last commit
+
+	await scenario('changes only: the edited and the new key are synced, an unrelated key that is missing elsewhere is left alone', async () => {
+		stubs.reset();
+		const w = world();
+		seedDestination(w); // en: a, b   es: a, b, extra   fr: a, b   (committed)
+		// fr is missing "old" for a long time: that is NOT part of this change
+		W(w.dstFile('en', 'common.json'), json({ a: 'Alpha', b: 'Beta', old: 'Old key' }));
+		W(w.dstFile('es', 'common.json'), json({ a: 'es-Alpha', b: 'es-Beta', old: 'es-Old', extra: 'Solo es' }));
+		w.dst.commit('old key exists in en and es, but not in fr');
+		// the actual change: one edit and one new key, not committed
+		W(w.dstFile('en', 'common.json'), json({ a: 'Alpha, edited', b: 'Beta', old: 'Old key', fresh: 'Fresh key' }));
+		const ai = aiClient();
+		const res = await reverse(w, makeService(stubs, { ai: [ai] }), false, 'changes');
+		const es = readJson(w.dstFile('es', 'common.json'));
+		const fr = readJson(w.dstFile('fr', 'common.json'));
+		assert.equal(es.a, 'ai(Alpha, edited)');
+		assert.equal(es.fresh, 'ai(Fresh key)');
+		assert.equal(fr.a, 'ai(Alpha, edited)');
+		assert.equal(fr.fresh, 'ai(Fresh key)');
+		assert.equal(fr.old, undefined, 'the key that was already missing in fr is not part of this sync');
+		assert.equal(es.old, 'es-Old', 'untouched');
+		assert.equal(es.extra, 'Solo es');
+		assert.equal(res.stats.issues.length, 0);
+		assert.equal(res.changedFiles, 1);
+		assert.ok(ai.prompts.flatMap(itemsIn).every((i) => i.text !== 'Old key'), 'the unrelated key was never one of the strings to translate (it may appear as a reference example)');
+	});
+
+	await scenario('changes only: a staged change counts, and so does a new untracked file (all of its keys)', async () => {
+		stubs.reset();
+		const w = world();
+		seedDestination(w);
+		W(w.dstFile('en', 'common.json'), json({ a: 'Alpha', b: 'Beta', staged: 'Staged key' }));
+		sh('git add -A', w.dst.dir); // staged, not committed
+		W(w.dstFile('en', 'brand-new.json'), json({ x: 'X', y: 'Y' })); // untracked
+		await reverse(w, makeService(stubs, { ai: [aiClient()] }), false, 'changes');
+		assert.equal(readJson(w.dstFile('es', 'common.json')).staged, 'ai(Staged key)');
+		assert.deepEqual(readJson(w.dstFile('es', 'brand-new.json')), { x: 'ai(X)', y: 'ai(Y)' });
+		assert.deepEqual(readJson(w.dstFile('fr', 'brand-new.json')), { x: 'ai(X)', y: 'ai(Y)' });
+	});
+
+	await scenario('changes only: nothing changed since the last commit means nothing is written and nothing is asked of the AI', async () => {
+		stubs.reset();
+		const w = world();
+		seedDestination(w);
+		W(w.dstFile('fr', 'common.json'), json({ a: 'fr-Alpha' })); // fr lacks "b", but en has not changed
+		w.dst.commit('fr is behind');
+		const ai = aiClient();
+		const before = R(w.dstFile('fr', 'common.json'));
+		const res = await reverse(w, makeService(stubs, { ai: [ai] }), false, 'changes');
+		assert.equal(res.changedFiles, 0);
+		assert.equal(res.stats.files, 0);
+		assert.equal(ai.prompts.length, 0);
+		assert.equal(R(w.dstFile('fr', 'common.json')), before);
+		// the whole-file mode is still there for catching up
+		await reverse(w, makeService(stubs, { ai: [aiClient()] }), false, 'all');
+		assert.equal(readJson(w.dstFile('fr', 'common.json')).b, 'ai(Beta)');
+	});
+
+	await scenario('changes only: a removed key is removed from the translations, and a key that was never there is not an error', async () => {
+		stubs.reset();
+		const w = world();
+		seedDestination(w);
+		W(w.dstFile('en', 'common.json'), json({ a: 'Alpha' })); // b removed
+		const res = await reverse(w, makeService(stubs, { ai: [aiClient()] }), false, 'changes');
+		assert.equal(readJson(w.dstFile('es', 'common.json')).b, undefined);
+		assert.equal(readJson(w.dstFile('fr', 'common.json')).b, undefined);
+		assert.equal(readJson(w.dstFile('es', 'common.json')).extra, 'Solo es', 'keys only es has stay');
+		assert.equal(res.stats.issues.length, 0);
+	});
+
+	await scenario('changes only: a language file that does not exist yet is created with just the changed keys, not the whole source file', async () => {
+		stubs.reset();
+		const w = world();
+		seedDestination(w);
+		fs.rmSync(w.dstFile('fr', 'common.json'));
+		w.dst.commit('fr/common.json is gone');
+		W(w.dstFile('en', 'common.json'), json({ a: 'Alpha', b: 'Beta', c: 'Gamma' })); // only "c" is new
+		await reverse(w, makeService(stubs, { ai: [aiClient()] }), false, 'changes');
+		assert.deepEqual(readJson(w.dstFile('fr', 'common.json')), { c: 'ai(Gamma)' });
+		assert.equal(readJson(w.dstFile('es', 'common.json')).c, 'ai(Gamma)');
+	});
+
+	await scenario('changes only: the baseline moves only for the keys that were handled, so a later whole-file sync still finds the rest', async () => {
+		stubs.reset();
+		const w = world();
+		seedDestination(w);
+		W(w.dstFile('en', 'common.json'), json({ a: 'Alpha', b: 'Beta', c: 'Gamma' }));
+		w.dst.commit('c added but never synced');
+		W(w.dstFile('en', 'common.json'), json({ a: 'Alpha', b: 'Beta, edited', c: 'Gamma' }));
+		await reverse(w, makeService(stubs, { ai: [aiClient()] }), false, 'changes'); // only "b" changed
+		assert.equal(readJson(w.dstFile('es', 'common.json')).b, 'ai(Beta, edited)');
+		assert.equal(readJson(w.dstFile('es', 'common.json')).c, undefined, 'c was committed earlier and is not part of this change');
+		await reverse(w, makeService(stubs, { ai: [aiClient()] }), false, 'all');
+		assert.equal(readJson(w.dstFile('es', 'common.json')).c, 'ai(Gamma)', 'Sync All Missing catches up');
+	});
+
+	await scenario('changes only: a source that is not in a git repository falls back to comparing whole files (there is no last commit)', async () => {
+		stubs.reset();
+		const w = world();
+		seedDestination(w);
+		const plain = path.join(w.root, 'plain-source');
+		W(path.join(plain, 'common.json'), json({ a: 'Alpha', z: 'Zed' }));
+		const cfg = { ...w.cfg, sourceDir: plain, destinations: [T(w.dstDir)] };
+		const res = await syncFromSource(cfg, { makeService: async () => makeService(stubs, { ai: [aiClient()] }), pending: w.pending, snapshots: w.snapshots }, 'git', log, 'changes');
+		assert.equal(res.fellBack, true);
+		assert.equal(readJson(w.dstFile('es', 'common.json')).z, 'ai(Zed)');
+	});
+
+	await scenario('changes only, copy destination: the copy gets just the changed keys as they are', async () => {
+		stubs.reset();
+		const w = world();
+		seedDestination(w);
+		W(path.join(w.srcDir, 'common.json'), json({ a: 'Alpha (older wording)', b: 'Beta', keep: 'only in the copy' }));
+		w.src.commit('copy folder content');
+		W(w.dstFile('en', 'common.json'), json({ a: 'Alpha', b: 'Beta', c: 'Gamma' })); // only "c" is new
+		await reverse(w, makeService(stubs, { ai: [aiClient()] }), true, 'changes');
+		const copy = readJson(path.join(w.srcDir, 'common.json'));
+		assert.equal(copy.c, 'Gamma', 'copied, not translated');
+		assert.equal(copy.a, 'Alpha (older wording)', 'not part of the change, not overwritten');
+		assert.equal(copy.keep, 'only in the copy');
+	});
+
+	// ---------------------------------------------------------------- which engine made the strings
+
+	await scenario('engines: every translated string is attributed to the model that made it, and machine translation is named as such', async () => {
+		stubs.reset();
+		const w = world();
+		seedDestination(w);
+		W(w.dstFile('en', 'common.json'), json({ a: 'Alpha', b: 'Beta', c: 'Gamma', d: 'Delta' })); // c and d are new: 2 strings x 2 languages
+		const ai = aiClient();
+		const res = await reverse(w, makeService(stubs, { ai: [ai] }), false, 'changes');
+		assert.deepEqual(res.stats.engines, { [ai.label]: 4 });
+
+		const w2 = world();
+		seedDestination(w2);
+		W(w2.dstFile('en', 'common.json'), json({ a: 'Alpha', b: 'Beta', c: 'Gamma' }));
+		const dead = new FakeClient('dead', () => new LlmError('x', 'unavailable'));
+		const res2 = await reverse(w2, makeService(stubs, { ai: [dead] }), false, 'changes');
+		assert.deepEqual(res2.stats.engines, { 'machine translation': 2 }, 'the fallback is named, not passed off as the AI');
+	});
+
+	// ---------------------------------------------------------------- Stop
+
+	/** A model that answers normally until its Nth request, where the user presses Stop. */
+	const stopsAt = (n: number, ctl: AbortController) => {
+		const inner = aiClient();
+		let calls = 0;
+		const client: LlmClient = {
+			label: 'stopper',
+			async complete(prompt) {
+				calls++;
+				if (calls >= n) {
+					ctl.abort();
+					throw new Cancelled();
+				}
+				return inner.complete(prompt);
+			},
+		};
+		return client;
+	};
+
+	await scenario('stop: a Sync Locales stopped halfway keeps the files already written, leaves the rest untouched, reports it, and does not move the baseline', async () => {
+		stubs.reset();
+		const w = world();
+		seedDestination(w);
+		W(w.dstFile('en', 'a.json'), json({ k: 'First file' }));
+		W(w.dstFile('en', 'b.json'), json({ k: 'Second file' }));
+		const ctl = new AbortController();
+		const svc = makeService(stubs, { ai: [stopsAt(3, ctl)], signal: ctl.signal }); // a -> es, a -> fr, then Stop while b -> es
+		const res = await syncFromSource(reverseCfg(w), { makeService: async () => svc, pending: w.pending, snapshots: w.snapshots, signal: ctl.signal }, 'git', log, 'all');
+		assert.equal(res.cancelled, true);
+		assert.deepEqual(readJson(w.dstFile('es', 'a.json')), { k: 'ai(First file)' });
+		assert.deepEqual(readJson(w.dstFile('fr', 'a.json')), { k: 'ai(First file)' });
+		assert.ok(!fs.existsSync(w.dstFile('es', 'b.json')), 'the file that was being translated when Stop was pressed was not written');
+		assert.ok(!fs.existsSync(w.dstFile('fr', 'b.json')));
+		assert.deepEqual(await w.snapshots.scope(w.dstDir).keysOf('b.json'), [], 'no baseline claims keys that were never synced');
+		assert.equal(await w.pending.count(), 0, 'no English placeholders were queued for the stopped strings');
+	});
+
+	await scenario('stop: pressing Stop before anything started does nothing and still returns normally', async () => {
+		stubs.reset();
+		const w = world();
+		seedDestination(w);
+		W(w.dstFile('en', 'common.json'), json({ a: 'Alpha', b: 'Beta', c: 'Gamma' }));
+		const ctl = new AbortController();
+		ctl.abort();
+		const svc = makeService(stubs, { ai: [aiClient()], signal: ctl.signal });
+		const res = await syncFromSource(reverseCfg(w), { makeService: async () => svc, pending: w.pending, snapshots: w.snapshots, signal: ctl.signal }, 'git', log, 'changes');
+		assert.equal(res.cancelled, true);
+		assert.equal(res.stats.files, 0);
+		assert.equal(readJson(w.dstFile('es', 'common.json')).c, undefined);
+	});
+
+	await scenario('stop: a commit sync stopped halfway reports it and keeps what was written', async () => {
+		stubs.reset();
+		const w = world();
+		W(path.join(w.srcDir, 'x.json'), json({ x: 'X' }));
+		const c1 = w.src.commit('one');
+		W(path.join(w.srcDir, 'a.json'), json({ k: 'First file' }));
+		W(path.join(w.srcDir, 'b.json'), json({ k: 'Second file' }));
+		const c2 = w.src.commit('two');
+		const ctl = new AbortController();
+		const svc = makeService(stubs, { ai: [stopsAt(3, ctl)], signal: ctl.signal });
+		const st = await syncCommit(w.cfg, { makeService: async () => svc, pending: w.pending, snapshots: w.snapshots, signal: ctl.signal }, 'git', w.src.dir, c1, c2, log);
+		assert.equal(st.cancelled, true);
+		assert.deepEqual(readJson(w.dstFile('es', 'a.json')), { k: 'ai(First file)' });
+		assert.ok(!fs.existsSync(w.dstFile('es', 'b.json')));
+	});
+
+	await scenario('stop: retrying the waiting strings keeps what it finished and leaves the rest queued', async () => {
+		stubs.reset();
+		const w = world();
+		W(w.dstFile('es', 'a.json'), json({ k: 'First' }));
+		W(w.dstFile('es', 'b.json'), json({ k: 'Second' }));
+		await w.pending.add([
+			{ file: w.dstFile('es', 'a.json'), path: ['k'], text: 'First', locale: 'es', since: 1, kind: 'english', written: 'First' },
+			{ file: w.dstFile('es', 'b.json'), path: ['k'], text: 'Second', locale: 'es', since: 1, kind: 'english', written: 'Second' },
+		]);
+		const ctl = new AbortController();
+		const svc = makeService(stubs, { ai: [stopsAt(2, ctl)], signal: ctl.signal }); // a is finished, Stop while b is being translated
+		const res = await retryPending(w.pending, svc, log);
+		assert.equal(res.fixed, 1);
+		assert.equal(res.remaining, 1);
+		assert.equal(readJson(w.dstFile('es', 'a.json')).k, 'ai(First)');
+		assert.equal(readJson(w.dstFile('es', 'b.json')).k, 'Second', 'untouched');
+		assert.equal(await w.pending.count(), 1);
+	});
+
 	// ---------------------------------------------------------------- broken files and structure clashes
 
 	await scenario('a locale file that is not valid JSON is left untouched and reported; the other locales still sync; fixing it later fills it', async () => {
@@ -440,7 +670,7 @@ function seedDestination(w: World) {
 		await reverse(w, makeService(stubs, { ai: [aiClient()] })); // baseline
 		W(w.dstFile('en', 'common.json'), json({ a: 'Alpha, edited', b: 'Beta', c: 'Gamma' }));
 		const ai = aiClient();
-		const res = await syncFromSource(reverseCfg(w, true, false), { makeService: async () => makeService(stubs, { ai: [ai] }), pending: w.pending, snapshots: w.snapshots }, 'git', log);
+		const res = await syncFromSource(reverseCfg(w, true, false), { makeService: async () => makeService(stubs, { ai: [ai] }), pending: w.pending, snapshots: w.snapshots }, 'git', log, 'all');
 		assert.equal(ai.prompts.length, 0, 'nothing was translated');
 		assert.deepEqual(readJson(path.join(w.srcDir, 'common.json')), { a: 'Alpha, edited', b: 'Beta', c: 'Gamma' }, 'the fallback copy was written');
 		assert.equal(readJson(w.dstFile('es', 'common.json')).c, undefined, 'es untouched');
@@ -473,7 +703,7 @@ function seedDestination(w: World) {
 		assert.equal(readJson(w.dstFile('es', 'common.json')).a, 'ai(Alpha, edited)');
 		assert.equal(readJson(path.join(w.srcDir, 'common.json')).a, 'Alpha', 'the fallback was left out of batch 1');
 		const ai = aiClient();
-		await syncFromSource(reverseCfg(w, true, false), { makeService: async () => makeService(stubs, { ai: [ai] }), pending: w.pending, snapshots: w.snapshots }, 'git', log); // batch 2: fallback only
+		await syncFromSource(reverseCfg(w, true, false), { makeService: async () => makeService(stubs, { ai: [ai] }), pending: w.pending, snapshots: w.snapshots }, 'git', log, 'all'); // batch 2: fallback only
 		assert.equal(readJson(path.join(w.srcDir, 'common.json')).a, 'Alpha, edited', 'batch 2 brought the fallback up to date');
 		assert.equal(ai.prompts.length, 0);
 	});

@@ -57,11 +57,16 @@ exports.run = async function run() {
 
 	// stand-in for an OpenAI-compatible AI endpoint: translates every string as ai(<text>) and remembers the last prompt
 	let aiMode = 'ok';
+	let slowRequests = 0;
 	const prompts = [];
 	const aiServer = http.createServer((req, res) => {
 		let b = '';
 		req.on('data', (c) => (b += c));
 		req.on('end', () => {
+			if (aiMode === 'slow') {
+				slowRequests++; // a model that is thinking for a long time: only Stop gets the sync out of it
+				return void setTimeout(() => { try { res.statusCode = 503; res.end('late'); } catch { /* the client is gone */ } }, 30000);
+			}
 			if (aiMode !== 'ok') {
 				res.statusCode = 503;
 				return res.end('down');
@@ -127,7 +132,7 @@ exports.run = async function run() {
 
 	await check('every command is registered', async () => {
 		const cmds = await vscode.commands.getCommands(true);
-		for (const c of ['configure', 'syncLastCommit', 'syncDestination', 'showLog', 'retryPending', 'testAi', 'qualityCheck', 'setApiKey', 'createContextTemplate', 'openContextFile', 'showStatus']) {
+		for (const c of ['configure', 'syncLastCommit', 'syncDestination', 'showLog', 'retryPending', 'testAi', 'qualityCheck', 'setApiKey', 'createContextTemplate', 'openContextFile', 'showStatus', 'syncAll', 'stop']) {
 			if (!cmds.includes('i18nSync.' + c)) {throw new Error('missing command i18nSync.' + c);}
 		}
 	});
@@ -252,6 +257,41 @@ exports.run = async function run() {
 		await vscode.commands.executeCommand('i18nSync.showStatus');
 		await sleep(1500);
 		fs.writeFileSync(bad, JSON.stringify({ o: 'Otro' }, null, 2) + '\n');
+	});
+
+	await check('Sync Locales syncs only what changed since the last commit: an older key that is missing in a language is left alone; Sync All Missing catches it', async () => {
+		const esFile = path.join(DST, 'es', 'common.json');
+		sh('git add -A && git commit -q -m baseline', DST_REPO);
+		const older = JSON.parse(rd(esFile));
+		delete older.devadded; // es lacks a key that en already had when it was committed: not part of the next change
+		fs.writeFileSync(esFile, JSON.stringify(older, null, 2) + '\r\n');
+		sh('git add -A && git commit -q -m "es lacks an older key"', DST_REPO);
+		fs.writeFileSync(path.join(DST, 'en', 'common.json'), JSON.stringify({ ...JSON.parse(rd(path.join(DST, 'en', 'common.json'))), justchanged: 'Only this one changed' }, null, 2) + '\r\n');
+		await vscode.commands.executeCommand('i18nSync.syncDestination');
+		if (!(await until(() => es('common.json')?.justchanged === AI('Only this one changed'), 90000))) {throw new Error('the changed key was not synced');}
+		await sleep(1500);
+		if ('devadded' in (es('common.json') ?? {})) {throw new Error('an older key that was not part of the change was synced as well');}
+		await vscode.commands.executeCommand('i18nSync.syncAll');
+		if (!(await until(() => es('common.json')?.devadded === AI('Added in the translation repo'), 90000))) {throw new Error('Sync All Missing did not catch up the older key');}
+	});
+
+	await check('Stop: a sync that is waiting for a slow model ends at once, writes nothing for the stopped strings, and the next sync starts right away', async () => {
+		const esFile = path.join(DST, 'es', 'common.json');
+		const before = rd(esFile);
+		aiMode = 'slow';
+		slowRequests = 0;
+		fs.writeFileSync(path.join(DST, 'en', 'common.json'), JSON.stringify({ ...JSON.parse(rd(path.join(DST, 'en', 'common.json'))), stopme: 'This one is never translated' }, null, 2) + '\r\n');
+		await vscode.commands.executeCommand('i18nSync.syncDestination');
+		if (!(await until(() => slowRequests > 0, 30000))) {throw new Error('the sync never reached the model');}
+		const pressed = Date.now();
+		await vscode.commands.executeCommand('i18nSync.stop');
+		aiMode = 'ok';
+		await sleep(1500);
+		if (rd(esFile) !== before) {throw new Error('es/common.json was changed by the stopped sync: ' + rd(esFile));}
+		// the queue is free again: a new sync runs at once, not after the 30 s the slow model would have taken
+		await vscode.commands.executeCommand('i18nSync.syncDestination');
+		if (!(await until(() => es('common.json')?.stopme === AI('This one is never translated'), 20000))) {throw new Error('the next sync did not run promptly after Stop');}
+		if (Date.now() - pressed > 25000) {throw new Error('Stop did not end the running sync promptly');}
 	});
 
 	log('\n' + results.join('\n'));

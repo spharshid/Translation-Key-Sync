@@ -164,6 +164,8 @@ export interface ServiceOpts {
 	sourceLocale?: string;
 	log?: (m: string) => void;
 	health?: ProviderHealth;
+	/** stops the run (the Stop button) */
+	signal?: AbortSignal;
 }
 
 /** A TranslationService wired to the stubs: optional AI clients first, machine translation as the fallback. */
@@ -172,11 +174,12 @@ export function makeService(stubs: Stubs, o: ServiceOpts = {}) {
 	const context = o.context ?? EMPTY_CONTEXT;
 	const health = o.health ?? new ProviderHealth();
 	const ai = o.ai?.length
-		? new AiEngine({ clients: o.ai, context, sourceLocale: o.sourceLocale ?? 'en', reviewPass: o.reviewPass ?? false, log, timing: { rateBackoffMs: 1, maxRateRetries: 2, maxTransientRetries: 1 } })
+		? new AiEngine({ clients: o.ai, context, sourceLocale: o.sourceLocale ?? 'en', reviewPass: o.reviewPass ?? false, log, signal: o.signal, timing: { rateBackoffMs: 1, maxRateRetries: 2, maxTransientRetries: 1 } })
 		: undefined;
 	return new TranslationService({
 		ai,
 		aiWanted: o.aiWanted ?? !!ai,
+		signal: o.signal,
 		context,
 		sourceLocale: o.sourceLocale ?? 'en',
 		log,
@@ -191,6 +194,7 @@ export function makeService(stubs: Stubs, o: ServiceOpts = {}) {
 					budgetMs: o.budgetMs ?? 20000,
 					timing: FAST,
 					log,
+					signal: o.signal,
 				},
 				o.sourceLocale ?? 'en',
 				health,

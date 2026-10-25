@@ -80,9 +80,13 @@ export interface SyncStats {
 	reused: number;
 	/** files and keys that were left untouched because their content is broken */
 	issues: Issue[];
+	/** the user stopped the sync before it was done: what was written before stays, the rest was not touched */
+	cancelled?: boolean;
+	/** strings per model or service that produced them (a model name, "translation memory", "machine translation") */
+	engines: Record<string, number>;
 }
 
-export const newStats = (): SyncStats => ({ written: 0, files: 0, pending: 0, machine: 0, created: 0, verified: 0, skipped: 0, reused: 0, issues: [] });
+export const newStats = (): SyncStats => ({ written: 0, files: 0, pending: 0, machine: 0, created: 0, verified: 0, skipped: 0, reused: 0, issues: [], engines: {} });
 
 export interface SyncCtx {
 	service: TranslationService;
@@ -101,6 +105,8 @@ export interface FileJob {
 	changes: Change[];
 	/** every key of the source file: used to create the target file when it does not exist yet */
 	allKeys: Change[];
+	/** write only `changes`, also into a target file that does not exist yet (it is created with just those keys) */
+	onlyChanges?: boolean;
 	sourceFormat: Format;
 	/** the parsed source-language file (used to find approved translations to show the model) */
 	sourceDoc: unknown;
@@ -178,7 +184,11 @@ export async function syncFileToLocale(ctx: SyncCtx, job: FileJob): Promise<Chan
 	const targetDoc = existed ? parse(raw) : null;
 
 	const work: Change[] = [];
-	for (const c of existed ? job.changes : job.allKeys) {
+	// a new target file is created from every key of the source, unless only the changes were asked for
+	for (const c of existed || job.onlyChanges ? job.changes : job.allKeys) {
+		if (!existed && c.deleted) {
+			continue; // nothing to remove from a file that does not exist
+		}
 		const clash = existed && !c.deleted ? structureProblem(targetDoc, c.path) : undefined;
 		if (clash) {
 			addIssue(stats.issues, { ...base, kind: 'structure', message: clash, key: dottedPath(c.path) });
@@ -223,6 +233,9 @@ export async function syncFileToLocale(ctx: SyncCtx, job: FileJob): Promise<Chan
 			const r = results.get(idOf.get(`${ci}|${JSON.stringify(at)}`) ?? '');
 			if (!r) {
 				return v;
+			}
+			if (r.via) {
+				stats.engines[r.via] = (stats.engines[r.via] ?? 0) + 1;
 			}
 			if (r.origin === 'memory') {
 				stats.reused++;

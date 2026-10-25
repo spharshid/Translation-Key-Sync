@@ -246,7 +246,7 @@ export class Runtime {
 	 * Everything needed to translate: the AI engine (when a model is available), the machine-translation fallback and
 	 * the context file. `expectedStrings` sizes the time budget.
 	 */
-	async buildService(s: Settings, expectedStrings: number, onTranslated?: () => void, extraClients?: LlmClient[], useMemory = true): Promise<TranslationService> {
+	async buildService(s: Settings, expectedStrings: number, onTranslated?: () => void, extraClients?: LlmClient[], useMemory = true, signal?: AbortSignal): Promise<TranslationService> {
 		const t0 = Date.now();
 		// time spent actively translating is work, not waiting: allow ~2 s per string on top of the wait budget
 		const clients0 = extraClients ?? (await this.aiClients(s));
@@ -266,6 +266,7 @@ export class Runtime {
 					reviewPass: s.ai.reviewPass && !onlyFree,
 					log: this.log,
 					stop: () => Date.now() - t0 > budget,
+					signal,
 				})
 			: undefined;
 		if (!ai && s.ai.enabled) {
@@ -281,11 +282,12 @@ export class Runtime {
 					expectedStrings,
 					budgetMs: s.budgetMs,
 					log: this.log,
+					signal,
 				},
 				s.cfg.sourceLocale,
 				this.health,
 			);
 		const memory = useMemory && s.useMemory && s.localesDir ? await this.loadMemory(s) : undefined;
-		return new TranslationService({ ai, aiWanted: s.ai.enabled, memory, classic, context, sourceLocale: s.cfg.sourceLocale, log: this.log, onTranslated });
+		return new TranslationService({ ai, aiWanted: s.ai.enabled, memory, classic, context, sourceLocale: s.cfg.sourceLocale, log: this.log, onTranslated, signal });
 	}
 }

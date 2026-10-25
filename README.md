@@ -70,13 +70,24 @@ A destination row has a folder, a type (*Translate into languages* or *Copy as i
   source file's line endings and indentation; sub-folders are mirrored. Skipped on purpose: merge commits, multi-commit
   fast-forwards, amends, rebases, branch switches and (by default) other people's commits. The source folder's repo must be open in
   VS Code. **Sync Last Commit** runs it for the current commit by hand.
-- **With the Sync Locales button** (status bar, the globe icon in the Source Control title bar, or the command): every key that is
-  new or edited in the source, or missing from a destination, is brought across. With **more than one ticked destination** it first
-  asks which of them this batch should go to (pre-ticked; Esc cancels), so one batch can go to one repo and the next to both without
-  opening the settings. *Ask which destinations to use each time* turns that question off.
-- **Each destination keeps its own record** of what it was last synced from. Leaving a destination out of one batch never makes it
-  miss that batch's edits: it receives them the next time it is included. A copy destination only gets new and edited keys, and never
-  has unrelated values overwritten.
+- **With the Sync Locales button** (status bar, the sync icon in the Source Control title bar, or the command): only the keys of
+  the source files that **changed since the last commit** of the source's repo, staged or not, are brought across: added and edited
+  keys are translated, removed keys are removed, and a file that is new counts as all new. Keys that were already missing somewhere
+  before are left alone, so a sync after a small edit stays small. With **more than one ticked destination** it first asks which of
+  them this batch should go to (pre-ticked; Esc cancels), so one batch can go to one repo and the next to both without opening the
+  settings. *Ask which destinations to use each time* turns that question off.
+- **Sync All Missing** (command palette, or the button on the Translation Status page) compares the whole files instead and brings
+  across every key that is missing from a destination or was edited since it was last synced: use it to catch up, for example after
+  adding a language, or after committing changes without syncing them. A source that is not in a git repository has no "last commit",
+  so Sync Locales compares whole files there too.
+- **Stop.** The *Cancel* button of the progress notification, the **Stop** button that appears in the status bar while something
+  runs, the **Stop** button on the Translation Status page, and the command *Stop Translation* all end the work at once, even a
+  request that is still waiting for a model, and drop anything queued behind it. Files already written stay as they are. The
+  string being translated when you stop is not written at all (no English placeholder, nothing queued), so the next sync simply
+  picks it up again.
+- **Each destination keeps its own record** of what it was last synced from, which Sync All Missing uses: a destination left out of
+  one batch receives that batch's edits the next time it is synced that way. A copy destination only gets the keys being synced and
+  never has unrelated values overwritten.
 - A key already translated from the same text is never translated twice, so committing the same change later does not redo the work.
 
 Nothing is ever committed or pushed in any repo. Review the working tree and commit it yourself.
@@ -119,7 +130,12 @@ The order is fixed, there is nothing to arrange. The extension uses the first of
    Google first, then the Hugging Face Space. Strings that only got machine translation are queued and redone by an AI as soon as
    one is available.
 
-The settings page shows one line, *Using now: ...*, with a **Test** button.
+The settings page shows one line, *Using now: ...*, with a **Test** button: that is what will be tried first.
+
+To see what actually made the strings, look after a sync: the completion message, the log (*Show Log*) and the Translation Status page
+all say which model or service translated how many strings, for example `translated by gemini-3.6-flash 12, translation memory 3`.
+This matters when a provider is busy and the next one steps in: the summary names the one that answered, and strings that only got
+machine translation say `machine translation`.
 
 | | VS Code (+ Copilot) | Cursor, Trae, Antigravity, other forks |
 |---|---|---|
@@ -262,8 +278,8 @@ finds `i18n-context.json` in the first *Translate* destination folder on its own
 - **Waiting for a translator:** strings written in English (or machine-translated) because no good translator answered, per
   language, with a link to each key.
 
-The buttons run **Sync Locales** (translates everything missing), **Retry waiting strings** (only the queued ones), **Rescan**, and
-the *Improve with my AI chat* route. The page refreshes by itself when a sync ends.
+The buttons run **Sync all missing** (translates everything in the lists above), **Retry waiting strings** (only the queued ones),
+**Rescan**, **Stop** (ends the work in progress), and the *Improve with my AI chat* route. The page refreshes by itself when a sync ends.
 
 ## Platforms
 
@@ -286,7 +302,9 @@ these services.
 | Command | |
 |---|---|
 | Configure | Settings screen |
-| Sync Locales | Sync the source to the ticked destinations (also the status-bar button); asks which when there are several |
+| Sync Locales | Sync what changed in the source since the last commit (staged or not) to the ticked destinations (also the status-bar button); asks which when there are several |
+| Sync All Missing Keys | Compare whole files and sync everything missing or edited, not only the changes since the last commit |
+| Stop Translation | Stop the sync or retry that is running and drop what is queued (also the status-bar Stop button) |
 | Sync Last Commit | The on-commit sync for the current commit (e.g. after an amend) |
 | Improve with My AI Chat / Apply AI Answer from Clipboard | The free, any-editor AI route |
 | Test AI Translation | Shows which engines are available; verifies the model and asks Copilot permission |

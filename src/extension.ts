@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { keySlot } from './ai/endpoint';
+import { isCancelled } from './cancel';
 import { listOllamaModels } from './ai/local';
 import { ConfigDeps, isConfigured, openConfigPanel } from './configPanel';
 import { git, getCommitInfo, getUserEmail } from './git';
@@ -13,7 +14,7 @@ import { SnapshotStore } from './snapshot';
 import { Destination, describeDestination } from './destinations';
 import { openStatusPanel, refreshStatusPanel } from './statusPanel';
 import { syncCommit } from './syncCommit';
-import { scanSource, syncFromSource } from './syncSource';
+import { scanSource, SyncScope, syncFromSource } from './syncSource';
 import { createContextTemplate, qualityCheck, setApiKey, testAi } from './tools';
 
 interface GitRepo {
@@ -39,6 +40,43 @@ function ownsSource(repo: GitRepo, sourceDir: string) {
 }
 
 let queue: Promise<unknown> = Promise.resolve();
+/** work that is running now (a sync, the retry of waiting strings); Stop aborts all of it */
+const activity = new Set<AbortController>();
+/** bumped by Stop: tasks queued before it that have not started yet are dropped */
+let generation = 0;
+let stopItem: vscode.StatusBarItem | undefined;
+
+function startActivity(): AbortController {
+	const ctl = new AbortController();
+	activity.add(ctl);
+	stopItem?.show();
+	return ctl;
+}
+
+function endActivity(ctl: AbortController) {
+	activity.delete(ctl);
+	if (!activity.size) {
+		stopItem?.hide();
+	}
+}
+
+/** Stop everything that is running, and drop what is queued behind it. Returns how many things were running. */
+function stopWork(): number {
+	const running = activity.size;
+	generation++;
+	for (const ctl of activity) {
+		ctl.abort();
+	}
+	return running;
+}
+
+/** Run a task after the ones before it, unless Stop was pressed in the meantime. */
+function enqueue<T>(task: () => Promise<T>): Promise<T | undefined> {
+	const gen = generation;
+	const run = queue.then(() => (gen === generation ? task() : undefined));
+	queue = run.catch(() => undefined);
+	return run;
+}
 let rt: Runtime;
 let pendingStore: PendingStore;
 let journal: Journal;
@@ -48,6 +86,7 @@ let state: vscode.Memento;
 /** files and keys the last sync could not touch because their content is broken */
 let lastIssues = 0;
 const LAST_ERROR = 'lastSyncError';
+const LAST_INFO = 'lastSyncInfo';
 let snapshots: SnapshotStore;
 
 /** Ask which of the ticked destinations this batch should go to (only when there is a choice). undefined = cancelled. */
@@ -93,10 +132,22 @@ function noticeMachine(count: number, s: Settings) {
 		});
 }
 
+/** "gemini-3.6-flash 12, translation memory 3": which models and services made the strings of a sync, most first. */
+function engineSummary(engines: Record<string, number>): string {
+	return Object.entries(engines)
+		.sort((a, b) => b[1] - a[1])
+		.map(([name, n]) => `${name} ${n}`)
+		.join(', ');
+}
+
 /** Remember how the last sync ended, for the status bar and the Translation Status page. */
-function recordRun(error?: string, issues = 0) {
+function recordRun(error?: string, issues = 0, engines?: Record<string, number>) {
 	lastIssues = issues;
 	void state.update(LAST_ERROR, error ? { at: Date.now(), message: error } : undefined);
+	const summary = engines ? engineSummary(engines) : '';
+	if (summary) {
+		void state.update(LAST_INFO, { at: Date.now(), text: `translated by ${summary}` });
+	}
 	refreshStatus();
 }
 
@@ -115,16 +166,21 @@ function noticePending(count: number) {
 		.then((p) => p && out.show());
 }
 
-/** Progress notification whose message counts translated strings. */
-function withTranslationProgress<T>(title: string, run: (makeService: (expected: number) => ReturnType<Runtime['buildService']>) => Promise<T>): Thenable<T> {
-	return vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title }, (progress) => {
+/**
+ * Progress notification whose message counts translated strings. Its Cancel button (and the Stop command) abort the work: `run` gets
+ * a signal that ends requests already in flight.
+ */
+function withTranslationProgress<T>(title: string, run: (makeService: (expected: number) => ReturnType<Runtime['buildService']>, signal: AbortSignal) => Promise<T>): Thenable<T> {
+	const ctl = startActivity();
+	return vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title, cancellable: true }, (progress, token) => {
+		token.onCancellationRequested(() => ctl.abort());
 		let n = 0;
 		let expected = 0;
 		return run((e) => {
 			expected = e;
 			const s = readSettings();
-			return rt.buildService(s, e, () => progress.report({ message: `translated ${++n} of ~${expected} strings` }));
-		});
+			return rt.buildService(s, e, () => progress.report({ message: `translated ${++n} of ~${expected} strings` }), undefined, true, ctl.signal);
+		}, ctl.signal).finally(() => endActivity(ctl));
 	});
 }
 
@@ -134,12 +190,21 @@ async function runSync(api: GitAPI, repo: GitRepo, from: string, to: string, man
 	const entry = { root: repo.rootUri.fsPath, from, to };
 	await journal.start(entry);
 	try {
-		const stats = await withTranslationProgress(`${NAME}: ${to.slice(0, 7)}`, (makeService) =>
-			syncCommit(s.cfg, { makeService, pending: pendingStore, snapshots }, api.git.path, repo.rootUri.fsPath, from, to, log),
+		const stats = await withTranslationProgress(`${NAME}: ${to.slice(0, 7)}`, (makeService, signal) =>
+			syncCommit(s.cfg, { makeService, pending: pendingStore, snapshots, signal }, api.git.path, repo.rootUri.fsPath, from, to, log),
 		);
 		await journal.finish(entry);
+		if (stats.cancelled) {
+			recordRun(undefined, stats.issues.length);
+			void vscode.window.showInformationMessage(`${NAME}: stopped. ${stats.files} file(s) were written before stopping; the rest was not touched.`);
+			return;
+		}
 		log(`done: ${stats.files} file(s) written, ${stats.verified} key(s) verified on disk, ${stats.pending} pending, ${stats.machine} machine-translated, ${stats.skipped} already up to date`);
-		recordRun(undefined, stats.issues.length);
+		const by = engineSummary(stats.engines);
+		if (by) {
+			log(`translated by: ${by}`);
+		}
+		recordRun(undefined, stats.issues.length, stats.engines);
 		noticeMachine(stats.machine, s);
 		if (stats.issues.length) {
 			noticeIssues(stats.issues.length);
@@ -147,12 +212,16 @@ async function runSync(api: GitAPI, repo: GitRepo, from: string, to: string, man
 			noticePending(stats.pending);
 		} else if (stats.files || manual) {
 			const msg = stats.files
-				? `${NAME}: updated ${stats.files} file(s) in the DestinationRepo` + (stats.created ? ` (${stats.created} newly created).` : '.')
+				? `${NAME}: updated ${stats.files} file(s) in the DestinationRepo` + (stats.created ? ` (${stats.created} newly created).` : '.') + (by ? ` Translated by ${by}.` : '')
 				: `${NAME}: no locale key changes to sync.`;
 			// don't await: an unanswered toast must not hold up the sync of the next commit
 			void vscode.window.showInformationMessage(msg, 'Show log').then((pick) => pick && out.show());
 		}
 	} catch (e) {
+		if (isCancelled(e)) {
+			await journal.finish(entry);
+			return;
+		}
 		// the journal entry stays, so this commit is tried again the next time VS Code starts
 		log(`ERROR ${(e as Error).stack ?? e}`);
 		recordRun((e as Error).message);
@@ -160,8 +229,11 @@ async function runSync(api: GitAPI, repo: GitRepo, from: string, to: string, man
 	}
 }
 
-/** State-based flow (the Sync Locales button): new and edited strings of the source folder go to the destinations chosen for this batch. */
-async function runSourceSync(api: GitAPI): Promise<void> {
+/**
+ * The Sync Locales button: the keys of the source folder that changed since the last commit (staged or not) go to the destinations
+ * chosen for this batch. With scope "all" (Sync All Missing) whole files are compared instead.
+ */
+async function runSourceSync(api: GitAPI, scope: SyncScope = 'changes'): Promise<void> {
 	const s = readSettings();
 	if (s.cfg.sourceDir && s.allDestinations.length && !s.cfg.destinations.length) {
 		void vscode.window.showInformationMessage(`${NAME}: no destination is ticked, so there is nothing to do.`, 'Open settings').then((p) => p && vscode.commands.executeCommand('i18nSync.configure'));
@@ -180,12 +252,20 @@ async function runSourceSync(api: GitAPI): Promise<void> {
 		return;
 	}
 	try {
-		const res = await withTranslationProgress(`${NAME}: syncing locales`, (makeService) =>
-			syncFromSource({ ...s.cfg, destinations: chosen }, { makeService, pending: pendingStore, snapshots }, api.git.path, log),
+		const res = await withTranslationProgress(`${NAME}: syncing locales`, (makeService, signal) =>
+			syncFromSource({ ...s.cfg, destinations: chosen }, { makeService, pending: pendingStore, snapshots, signal }, api.git.path, log, scope),
 		);
 		const st = res.stats;
 		log(`done: ${st.files} file(s) written, ${st.verified} key(s) verified, ${st.pending} pending, ${st.machine} machine-translated`);
-		recordRun(undefined, st.issues.length);
+		const by = engineSummary(st.engines);
+		if (by) {
+			log(`translated by: ${by}`);
+		}
+		recordRun(undefined, st.issues.length, st.engines);
+		if (res.cancelled) {
+			void vscode.window.showInformationMessage(`${NAME}: stopped. ${st.files} file(s) were written before stopping; the rest was not touched.`);
+			return;
+		}
 		noticeMachine(st.machine, s);
 		if (st.issues.length) {
 			noticeIssues(st.issues.length);
@@ -195,9 +275,18 @@ async function runSourceSync(api: GitAPI): Promise<void> {
 			noticePending(st.pending);
 			return;
 		}
+		if (scope === 'changes' && !res.changedFiles) {
+			void vscode.window
+				.showInformationMessage(`${NAME}: no changes in the source folder since the last commit, so there is nothing to sync.`, 'Sync all missing keys')
+				.then((p) => p && vscode.commands.executeCommand('i18nSync.syncAll'));
+			return;
+		}
 		const where = chosen.map((d) => path.basename(d.path) || d.path).join(', ');
-		void vscode.window.showInformationMessage(st.files ? `${NAME}: updated ${st.files} file(s) in ${where}.` : `${NAME}: ${where} is already in sync with ${s.cfg.sourceLocale}.`, 'Show log').then((p) => p && out.show());
+		void vscode.window.showInformationMessage(st.files ? `${NAME}: updated ${st.files} file(s) in ${where}.${by ? ` Translated by ${by}.` : ''}` : `${NAME}: ${where} is already in sync with ${s.cfg.sourceLocale}.`, 'Show log').then((p) => p && out.show());
 	} catch (e) {
+		if (isCancelled(e)) {
+			return;
+		}
 		log(`ERROR ${(e as Error).stack ?? e}`);
 		recordRun((e as Error).message);
 		vscode.window.showErrorMessage(`${NAME} failed: ${(e as Error).message}`, 'Show log').then((p) => p && out.show());
@@ -218,17 +307,21 @@ async function retryPendingNow(manual: boolean) {
 		return;
 	}
 	retrying = true;
+	const ctl = startActivity();
 	try {
 		const s = readSettings();
-		const service = await rt.buildService({ ...s, budgetMs: 10 * 60_000 }, before);
+		const service = await rt.buildService({ ...s, budgetMs: 10 * 60_000 }, before, undefined, undefined, true, ctl.signal);
 		const r = await retryPending(pendingStore, service, log);
 		log(`pending retry: ${r.fixed} translated, ${r.dropped} dropped (edited or removed meanwhile), ${r.remaining} still pending`);
-		if (r.fixed || manual) {
+		if (ctl.signal.aborted) {
+			void vscode.window.showInformationMessage(`${NAME}: stopped. ${r.fixed} waiting string(s) were finished before stopping, ${r.remaining} are still waiting.`);
+		} else if (r.fixed || manual) {
 			void vscode.window.showInformationMessage(`${NAME}: ${r.fixed} pending string(s) translated` + (r.remaining ? `, ${r.remaining} still waiting.` : '.'));
 		}
 	} catch (e) {
 		log(`ERROR retrying pending: ${(e as Error).message}`);
 	} finally {
+		endActivity(ctl);
 		retrying = false;
 		refreshStatus();
 	}
@@ -315,7 +408,7 @@ function watchRepo(api: GitAPI, repo: GitRepo, ctx: vscode.ExtensionContext) {
 				return;
 			}
 			log(`commit ${head.slice(0, 7)} detected`);
-			queue = queue.then(() => runSync(api, repo, prev, head, false));
+			void enqueue(() => runSync(api, repo, prev, head, false));
 		}),
 	);
 }
@@ -350,10 +443,15 @@ export async function activate(ctx: vscode.ExtensionContext) {
 	// status bar: state of the sync, and a button to translate whatever is new in the DestinationRepo
 	const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1);
 	const syncButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 0);
-	syncButton.text = '$(globe) Sync Locales';
-	syncButton.tooltip = 'Sync new and edited strings of the source folder to the ticked destinations';
+	syncButton.text = '$(repo-sync) Sync Locales';
+	syncButton.tooltip = 'Sync what changed in the source folder since the last commit (staged or not) to the ticked destinations';
 	syncButton.command = 'i18nSync.syncDestination';
-	ctx.subscriptions.push(status, syncButton);
+	stopItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 2);
+	stopItem.text = '$(debug-stop) Stop';
+	stopItem.tooltip = 'Stop the translation that is running';
+	stopItem.command = 'i18nSync.stop';
+	stopItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+	ctx.subscriptions.push(status, syncButton, stopItem);
 	refreshStatus = () => {
 		const s = readSettings();
 		void pendingStore.count().then((n) => {
@@ -368,7 +466,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
 				status.command = 'i18nSync.showStatus';
 				syncButton.show();
 			} else {
-				status.text = s.enabled ? '$(sync) i18n Sync' : '$(circle-slash) i18n Sync off';
+				status.text = s.enabled ? '$(globe) i18n Sync' : '$(circle-slash) i18n Sync off';
 				status.tooltip = `${NAME} settings`;
 				status.command = 'i18nSync.configure';
 				syncButton.show();
@@ -435,10 +533,17 @@ export async function activate(ctx: vscode.ExtensionContext) {
 				return;
 			}
 			log(`manual sync of ${head.slice(0, 7)}`);
-			queue = queue.then(() => runSync(api, repo, info.parents[0], head, true));
+			void enqueue(() => runSync(api, repo, info.parents[0], head, true));
 		}),
 		vscode.commands.registerCommand('i18nSync.syncDestination', () => {
-			queue = queue.then(() => runSourceSync(api));
+			void enqueue(() => runSourceSync(api));
+		}),
+		vscode.commands.registerCommand('i18nSync.stop', () => {
+			const running = stopWork();
+			void vscode.window.showInformationMessage(running ? `${NAME}: stopping. What was already written stays; the rest is not touched.` : `${NAME}: nothing is running.`);
+		}),
+		vscode.commands.registerCommand('i18nSync.syncAll', () => {
+			void enqueue(() => runSourceSync(api, 'all'));
 		}),
 		vscode.commands.registerCommand('i18nSync.showLog', () => out.show()),
 		vscode.commands.registerCommand('i18nSync.retryPending', () => retryPendingNow(true)),
@@ -453,11 +558,8 @@ export async function activate(ctx: vscode.ExtensionContext) {
 					return scanSource(s.cfg, { snapshots }, api.git.path, log);
 				},
 				lastError: () => state.get<{ at: number; message: string } | undefined>(LAST_ERROR, undefined),
-				syncLocales: () => {
-					const run = queue.then(() => runSourceSync(api));
-					queue = run;
-					return run;
-				},
+				lastSync: () => state.get<{ at: number; text: string } | undefined>(LAST_INFO, undefined),
+				syncAll: () => enqueue(() => runSourceSync(api, 'all')).then(() => undefined),
 				retryPending: () => retryPendingNow(true),
 			});
 		}),
@@ -538,12 +640,12 @@ export async function activate(ctx: vscode.ExtensionContext) {
 			const repo = api.repositories.find((r) => r.rootUri.fsPath === e.root);
 			if (repo) {
 				log(`resuming interrupted sync of ${e.to.slice(0, 7)}`);
-				queue = queue.then(() => runSync(api, repo, e.from, e.to, false));
+				void enqueue(() => runSync(api, repo, e.from, e.to, false));
 			}
 		}
-		queue = queue.then(() => retryPendingNow(false));
+		void enqueue(() => retryPendingNow(false));
 	}, 10_000);
-	const timer = setInterval(() => (queue = queue.then(() => retryPendingNow(false))), 5 * 60_000);
+	const timer = setInterval(() => void enqueue(() => retryPendingNow(false)), 5 * 60_000);
 	ctx.subscriptions.push({ dispose: () => clearInterval(timer) });
 	log(`${NAME} active`);
 }

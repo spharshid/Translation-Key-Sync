@@ -1,3 +1,4 @@
+import { Cancelled } from '../cancel';
 import * as vscode from 'vscode';
 import { LlmClient, LlmError } from './clients';
 
@@ -61,6 +62,9 @@ class CopilotClient implements LlmClient {
 			}
 			return text;
 		} catch (e) {
+			if (opts.signal?.aborted) {
+				throw new Cancelled();
+			}
 			if (e instanceof LlmError) {
 				throw e;
 			}

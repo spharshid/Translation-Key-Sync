@@ -1,3 +1,4 @@
+import { isCancelled, throwIfAborted } from './cancel';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Destination, isInside, targetsOf } from './destinations';
@@ -28,6 +29,8 @@ export interface SyncDeps {
 	makeService: (expectedStrings: number) => Promise<TranslationService>;
 	pending?: PendingStore;
 	snapshots?: SnapshotStore;
+	/** aborts the sync (Stop): what was written before stays */
+	signal?: AbortSignal;
 }
 
 /** Locale files that changed between two commits (from..to) under sourceDir, with their key-level changes. */
@@ -116,26 +119,35 @@ export async function syncCommit(
 	const service = await deps.makeService(expected);
 	log(`${jobs.length} file(s) to sync into ${cfg.destinations.length} destination(s), about ${expected} string(s) to translate`);
 
-	for (const job of jobs) {
-		log(`${job.rel}: ${job.changes.length} changed key(s)`);
-		for (const t of targetsFor(job.rel)) {
-			const ctx = { service, sourceLocale: cfg.sourceLocale, log, stats, pending: deps.pending, isUpToDate: upToDateCheck(deps.snapshots?.scope(t.dest.path)) };
-			await syncFileToLocale(ctx, {
-				rel: job.rel,
-				targetFile: t.file,
-				changes: job.changes,
-				allKeys: job.allKeys,
-				sourceFormat: job.format,
-				sourceDoc: job.sourceDoc,
-				locale: t.locale,
-			});
-		}
-		// every key of this file is now synced from its current text (not into a destination where a file was skipped: it still needs this change)
-		for (const dest of cfg.destinations) {
-			if (!stats.issues.some((i) => i.rel === job.rel && isInside(dest.path, i.file))) {
-				await deps.snapshots?.scope(dest.path).update(job.rel, [...job.allKeys, ...job.changes.filter((c) => c.deleted)]);
+	try {
+		for (const job of jobs) {
+			log(`${job.rel}: ${job.changes.length} changed key(s)`);
+			for (const t of targetsFor(job.rel)) {
+				throwIfAborted(deps.signal);
+				const ctx = { service, sourceLocale: cfg.sourceLocale, log, stats, pending: deps.pending, isUpToDate: upToDateCheck(deps.snapshots?.scope(t.dest.path)) };
+				await syncFileToLocale(ctx, {
+					rel: job.rel,
+					targetFile: t.file,
+					changes: job.changes,
+					allKeys: job.allKeys,
+					sourceFormat: job.format,
+					sourceDoc: job.sourceDoc,
+					locale: t.locale,
+				});
+			}
+			// every key of this file is now synced from its current text (not into a destination where a file was skipped: it still needs this change)
+			for (const dest of cfg.destinations) {
+				if (!stats.issues.some((i) => i.rel === job.rel && isInside(dest.path, i.file))) {
+					await deps.snapshots?.scope(dest.path).update(job.rel, [...job.allKeys, ...job.changes.filter((c) => c.deleted)]);
+				}
 			}
 		}
+	} catch (e) {
+		if (!isCancelled(e)) {
+			throw e;
+		}
+		stats.cancelled = true;
+		log('stopped by the user');
 	}
 	return stats;
 }

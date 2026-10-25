@@ -24,7 +24,10 @@ export interface StatusDeps {
 	/** a dry run of Sync Locales */
 	scan: () => Promise<ScanResult>;
 	lastError: () => { at: number; message: string } | undefined;
-	syncLocales: () => Promise<void>;
+	/** how the last sync that translated something went: which models and services made the strings */
+	lastSync: () => { at: number; text: string } | undefined;
+	/** Sync All Missing: whole files, not only the changes since the last commit */
+	syncAll: () => Promise<void>;
 	retryPending: () => Promise<void>;
 }
 
@@ -47,7 +50,7 @@ async function render(): Promise<void> {
 	void panel.webview.postMessage({ type: 'busy', on: true });
 	try {
 		const d = current;
-		const data: StatusData = { configured: d.configured(), roots: d.roots(), pending: await d.pending.all(), lastError: d.lastError(), at: Date.now(), syncsLocales: d.syncsLocales() };
+		const data: StatusData = { configured: d.configured(), roots: d.roots(), pending: await d.pending.all(), lastError: d.lastError(), lastSync: d.lastSync(), at: Date.now(), syncsLocales: d.syncsLocales() };
 		if (data.configured) {
 			try {
 				data.scan = await d.scan();
@@ -101,11 +104,13 @@ export function openStatusPanel(ctx: vscode.ExtensionContext, deps: StatusDeps):
 			if (m.type === 'rescan') {
 				await render();
 			} else if (m.type === 'sync') {
-				await run(() => deps.syncLocales());
+				await run(() => deps.syncAll());
 			} else if (m.type === 'retry') {
 				await run(() => deps.retryPending());
 			} else if (m.type === 'quality') {
 				await vscode.commands.executeCommand('i18nSync.qualityCheck');
+			} else if (m.type === 'stop') {
+				await vscode.commands.executeCommand('i18nSync.stop');
 			} else if (m.type === 'apply') {
 				await vscode.commands.executeCommand('i18nSync.applyAiAnswer');
 			} else if (m.type === 'chat') {
@@ -166,7 +171,8 @@ function page(nonce: string, csp: string): string {
 <body>
 <h1>Translation status</h1>
 <div class="bar">
-	<button data-act="sync" title="Translate every key that is missing or out of date">Sync Locales</button>
+	<button data-act="sync" title="Compare the whole files and translate every key that is missing or out of date, not only what changed since the last commit">Sync all missing</button>
+	<button class="sec" data-act="stop" data-keep="1" title="Stop the translation that is running and drop what is queued behind it">Stop</button>
 	<button class="sec" data-act="retry" title="Try again only the strings that are waiting for a translator">Retry waiting strings</button>
 	<button class="sec" data-act="rescan">Rescan</button>
 	<button class="sec" data-act="chat" title="Copy a prompt for the AI chat you already use">Improve with my AI chat</button>
@@ -196,7 +202,7 @@ function page(nonce: string, csp: string): string {
 	window.addEventListener('message', (e) => {
 		const m = e.data;
 		if (m.type === 'busy') {
-			buttons.forEach((b) => (b.disabled = m.on));
+			buttons.forEach((b) => { if (!b.dataset.keep) b.disabled = m.on; });
 			state.textContent = m.on ? 'Working…' : '';
 		} else if (m.type === 'render') {
 			const open = new Set([...root.querySelectorAll('details[open]')].map((d) => d.dataset.id));

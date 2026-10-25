@@ -1,3 +1,5 @@
+import { Cancelled } from '../cancel';
+
 /** A language model we can send a prompt to and get text back from. */
 export interface LlmClient {
 	/** short name for logs and messages, e.g. "Copilot (gpt-4.1)" */
@@ -5,6 +7,8 @@ export interface LlmClient {
 	/** largest prompt (in characters) worth sending in one request; the engine splits batches to fit */
 	readonly maxPromptChars?: number;
 	complete(prompt: string, opts?: { signal?: AbortSignal }): Promise<string>;
+	/** what answered the last request (a client that rotates models names the one it used), for the log and the summary */
+	describe?(): string;
 }
 
 export type LlmErrorKind =
@@ -56,6 +60,8 @@ export class OpenAiCompatClient implements LlmClient {
 	async complete(prompt: string, opts: { signal?: AbortSignal } = {}): Promise<string> {
 		const url = `${this.o.baseUrl.replace(/\/$/, '')}/chat/completions`;
 		let res: Response;
+		const timeout = AbortSignal.timeout(this.o.timeoutMs ?? 120_000);
+		const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
 		try {
 			res = await fetch(url, {
 				method: 'POST',
@@ -69,9 +75,12 @@ export class OpenAiCompatClient implements LlmClient {
 					...(this.o.reasoningEffort ? { reasoning_effort: this.o.reasoningEffort } : {}),
 					messages: [{ role: 'user', content: prompt }],
 				}),
-				signal: opts.signal ?? AbortSignal.timeout(this.o.timeoutMs ?? 120_000),
+				signal,
 			});
 		} catch (e) {
+			if (opts.signal?.aborted) {
+				throw new Cancelled();
+			}
 			throw new LlmError(`request failed: ${(e as Error).message}`, 'transient');
 		}
 		if (res.status === 429) {

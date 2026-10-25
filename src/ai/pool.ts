@@ -1,3 +1,4 @@
+import { throwIfAborted, waitUnlessAborted } from '../cancel';
 import { LlmClient, LlmError, OpenAiCompatClient } from './clients';
 
 export interface PoolOptions {
@@ -29,6 +30,7 @@ const SLOW_MS = 20_000;
 export class PooledClient implements LlmClient {
 	readonly label: string;
 	private models: string[];
+	private lastModel?: string;
 	private readonly blocked = new Map<string, { until: number; quota: boolean }>();
 	private readonly now: () => number;
 	private readonly sleep: (ms: number) => Promise<void>;
@@ -42,9 +44,15 @@ export class PooledClient implements LlmClient {
 		this.maxWait = o.maxWaitMs ?? 2 * 60_000;
 	}
 
+	/** the model that answered the last request */
+	describe(): string {
+		return this.lastModel ?? this.label;
+	}
+
 	async complete(prompt: string, opts: { signal?: AbortSignal } = {}): Promise<string> {
 		const waitedFrom = this.now();
 		for (;;) {
+			throwIfAborted(opts.signal);
 			if (!this.models.length) {
 				throw new LlmError('none of the configured models can be used (check the key and the model names)', 'unavailable');
 			}
@@ -58,12 +66,13 @@ export class PooledClient implements LlmClient {
 				if (this.now() - waitedFrom + wait > this.maxWait) {
 					throw new LlmError('every configured model is rate limited right now', 'rate', wait);
 				}
-				await this.sleep(wait);
+				await waitUnlessAborted(this.sleep, wait, opts.signal);
 				continue;
 			}
 			const began = this.now();
 			try {
 				const answer = await new OpenAiCompatClient({ baseUrl: this.o.baseUrl, model: ready, apiKey: this.o.apiKey, timeoutMs: this.o.timeoutMs, reasoningEffort: this.o.reasoningEffort }).complete(prompt, opts);
+				this.lastModel = ready;
 				if (this.now() - began > SLOW_MS) {
 					this.o.log?.(`${ready} answered slowly (${Math.round((this.now() - began) / 1000)} s)`);
 				}

@@ -135,6 +135,15 @@ const kindOf = async (p: Promise<unknown>) => {
 		assert.equal(lastBody.reasoning_effort, 'low');
 	});
 
+	await scenario('describe() names the model that actually answered, also after the pool moved on from a limited one', async () => {
+		reset();
+		behave = (m, n) => (m === 'flash' && n === 1 ? perMinute('23s') : { status: 200 });
+		const { c } = pool(['flash', 'lite']);
+		assert.equal(c.describe(), c.label, 'before any answer it falls back to the label');
+		await c.complete('p');
+		assert.equal(c.describe(), 'lite', 'flash was limited, lite answered');
+	});
+
 	server.closeAllConnections?.();
 	server.close();
 	done();

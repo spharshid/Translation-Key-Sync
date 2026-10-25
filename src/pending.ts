@@ -1,3 +1,4 @@
+import { isCancelled } from './cancel';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { applyEdits, modify, parse } from 'jsonc-parser';
@@ -123,69 +124,76 @@ export async function retryPending(store: PendingStore, service: TranslationServ
 		byFile.set(e.file, [...(byFile.get(e.file) ?? []), e]);
 	}
 
-	for (const [file, list] of byFile) {
-		let raw: string;
-		try {
-			raw = await fs.readFile(file, 'utf8');
-		} catch {
-			dropped += list.length; // the file is gone
-			finished.push(...list);
-			continue;
-		}
-		let bom = '';
-		if (raw.startsWith('﻿')) {
-			bom = '﻿';
-			raw = raw.slice(1);
-		}
-		const fmt = detectFormat(raw);
-		const doc = parse(raw);
-
-		const live: PendingEntry[] = [];
-		for (const e of list) {
-			if (valueAt(doc, e.path) !== writtenOf(e)) {
-				dropped++; // changed by someone else (or removed): leave it alone
-				finished.push(e);
-			} else {
-				live.push(e);
+	try {
+		for (const [file, list] of byFile) {
+			let raw: string;
+			try {
+				raw = await fs.readFile(file, 'utf8');
+			} catch {
+				dropped += list.length; // the file is gone
+				finished.push(...list);
+				continue;
 			}
-		}
-
-		let text = raw;
-		for (const locale of new Set(live.map((e) => e.locale))) {
-			const group = live.filter((e) => e.locale === locale);
-			const aiOnly = group.every((e) => e.kind === 'lowconf');
-			if (aiOnly && !service.aiAvailable) {
-				continue; // nothing could improve these right now
+			let bom = '';
+			if (raw.startsWith('﻿')) {
+				bom = '﻿';
+				raw = raw.slice(1);
 			}
-			const items = group.map((e, i) => ({ id: `p${i}`, text: e.text, keyPath: dottedPath(e.path) }));
-			const res = await service.translateBatch({ locale, file: path.basename(file), items, refs: [], aiOnly });
-			for (const [i, e] of group.entries()) {
-				const r = res.get(`p${i}`);
-				if (!r || r.origin === 'english') {
-					continue; // still not possible, stays queued
-				}
-				if (r.origin === 'classic' && e.kind === 'lowconf') {
-					continue;
-				}
-				text = applyEdits(
-					text,
-					modify(text, e.path, r.value, { formattingOptions: { eol: fmt.eol, insertSpaces: fmt.insertSpaces, tabSize: fmt.tabSize } }),
-				);
-				log(`[${locale}] translated pending ${dottedPath(e.path)} in ${path.basename(file)} (${r.origin})`);
-				if (r.origin === 'ai') {
-					fixed++;
+			const fmt = detectFormat(raw);
+			const doc = parse(raw);
+
+			const live: PendingEntry[] = [];
+			for (const e of list) {
+				if (valueAt(doc, e.path) !== writtenOf(e)) {
+					dropped++; // changed by someone else (or removed): leave it alone
 					finished.push(e);
-				} else if (service.aiIntended) {
-					updated.push({ ...e, kind: 'lowconf', written: r.value }); // better than English, still queued for the AI
 				} else {
-					fixed++;
-					finished.push(e);
+					live.push(e);
 				}
 			}
+
+			let text = raw;
+			for (const locale of new Set(live.map((e) => e.locale))) {
+				const group = live.filter((e) => e.locale === locale);
+				const aiOnly = group.every((e) => e.kind === 'lowconf');
+				if (aiOnly && !service.aiAvailable) {
+					continue; // nothing could improve these right now
+				}
+				const items = group.map((e, i) => ({ id: `p${i}`, text: e.text, keyPath: dottedPath(e.path) }));
+				const res = await service.translateBatch({ locale, file: path.basename(file), items, refs: [], aiOnly });
+				for (const [i, e] of group.entries()) {
+					const r = res.get(`p${i}`);
+					if (!r || r.origin === 'english') {
+						continue; // still not possible, stays queued
+					}
+					if (r.origin === 'classic' && e.kind === 'lowconf') {
+						continue;
+					}
+					text = applyEdits(
+						text,
+						modify(text, e.path, r.value, { formattingOptions: { eol: fmt.eol, insertSpaces: fmt.insertSpaces, tabSize: fmt.tabSize } }),
+					);
+					log(`[${locale}] translated pending ${dottedPath(e.path)} in ${path.basename(file)} (${r.origin})`);
+					if (r.origin === 'ai') {
+						fixed++;
+						finished.push(e);
+					} else if (service.aiIntended) {
+						updated.push({ ...e, kind: 'lowconf', written: r.value }); // better than English, still queued for the AI
+					} else {
+						fixed++;
+						finished.push(e);
+					}
+				}
+			}
+			if (text !== raw) {
+				await fs.writeFile(file, bom + text, 'utf8');
+			}
 		}
-		if (text !== raw) {
-			await fs.writeFile(file, bom + text, 'utf8');
+	} catch (e) {
+		if (!isCancelled(e)) {
+			throw e;
 		}
+		log('stopped by the user: what was finished stays, the rest is still queued');
 	}
 	await store.remove(finished);
 	if (updated.length) {

@@ -82,6 +82,14 @@ const entry = (locale: string, p: string[], kind: PendingEntry['kind'] = 'englis
 		assert.match(r.html, /The last sync failed/);
 	});
 
+	await scenario('the last sync is summarised: which models and services made the strings', () => {
+		const withInfo = renderStatus(data({ scan: scan(), lastSync: { at: Date.now() - 3 * 60_000, text: 'translated by gemini-3.6-flash 12, translation memory 3' } })).html;
+		assert.match(withInfo, /Last sync that translated something \(3 min ago\): <b>translated by gemini-3\.6-flash 12, translation memory 3<\/b>/);
+		assert.ok(!renderStatus(data({ scan: scan() })).html.includes('Last sync that translated'), 'nothing to show before the first sync');
+		const hostile = renderStatus(data({ scan: scan(), lastSync: { at: Date.now(), text: '<img src=x onerror=alert(1)>' } })).html;
+		assert.ok(!hostile.includes('<img'), 'escaped');
+	});
+
 	await scenario('not configured: asks to set up instead of showing empty lists', () => {
 		const { html } = renderStatus(data({ configured: false }));
 		assert.match(html, /Set up the destination folder/);

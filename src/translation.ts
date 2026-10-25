@@ -1,3 +1,4 @@
+import { throwIfAborted } from './cancel';
 import { AiEngine } from './ai/engine';
 import type { PromptItem, RefPair } from './ai/prompt';
 import { validateTranslation } from './ai/validate';
@@ -18,6 +19,8 @@ export interface Translated {
 	value: string;
 	origin: Origin;
 	warnings: string[];
+	/** which model or service made it (counted in the summary after a sync) */
+	via?: string;
 }
 
 export interface BatchRequest {
@@ -35,6 +38,8 @@ export interface ServiceOptions {
 	memory?: Memory;
 	/** the user wants AI translation (even if no model is reachable right now), so machine results get queued for a redo */
 	aiWanted?: boolean;
+	/** the user stopped the run: raises Cancelled instead of returning half-done results */
+	signal?: AbortSignal;
 	/** created on first use so its time budget starts when the fallback is actually needed */
 	classic: () => Translator;
 	context: ContextFile;
@@ -111,6 +116,7 @@ export class TranslationService {
 
 	/** Translate many strings of one file into one locale. Every requested id is present in the result. */
 	async translateBatch(req: BatchRequest): Promise<Map<string, Translated>> {
+		throwIfAborted(this.o.signal);
 		const out = new Map<string, Translated>();
 		const done = (id: string, r: Translated) => {
 			out.set(id, r);
@@ -123,7 +129,7 @@ export class TranslationService {
 			if (isTrivial(it.text)) {
 				done(it.id, { value: it.text, origin: 'ai', warnings: [] });
 			} else if (known !== undefined) {
-				done(it.id, { value: known, origin: 'memory', warnings: [] });
+				done(it.id, { value: known, origin: 'memory', warnings: [], via: 'translation memory' });
 			} else {
 				todo.push(it);
 			}
@@ -134,13 +140,14 @@ export class TranslationService {
 			const ai = await this.o.ai.translate({ ...req, items: todo });
 			for (const [id, r] of ai) {
 				if (r.ok) {
-					done(id, { value: r.value, origin: 'ai', warnings: r.problems });
+					done(id, { value: r.value, origin: 'ai', warnings: r.problems, via: r.model });
 				} else {
 					candidates.set(id, { value: r.value, problems: r.problems });
 				}
 			}
 		}
 
+		throwIfAborted(this.o.signal); // stopped while the AI was working: do not turn the rest into English or machine translation
 		const rest = todo.filter((i) => !out.has(i.id));
 		if (rest.length && req.aiOnly) {
 			for (const it of rest) {
@@ -151,7 +158,8 @@ export class TranslationService {
 				this.o.log(`[${req.locale}] ${rest.length} string(s) fall back to machine translation (queued for an AI redo later)`);
 			}
 			const results = await this.viaClassicBatch(rest, req.locale, candidates);
-			rest.forEach((it, i) => done(it.id, results[i]));
+			throwIfAborted(this.o.signal);
+			rest.forEach((it, i) => done(it.id, results[i].origin === 'classic' ? { ...results[i], via: 'machine translation' } : results[i]));
 		}
 		return out;
 	}

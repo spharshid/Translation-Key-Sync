@@ -1,3 +1,4 @@
+import { isCancelled, throwIfAborted, waitUnlessAborted } from '../cancel';
 import { ContextFile } from '../context';
 import { LlmClient, LlmError } from './clients';
 import {
@@ -35,6 +36,8 @@ export interface AiEngineOptions {
 	log: (m: string) => void;
 	/** true once the run's time budget is spent */
 	stop?: () => boolean;
+	/** the user stopped the run: raises Cancelled (unlike `stop`, which only ends the use of AI) so nothing half-done is written */
+	signal?: AbortSignal;
 	timing?: Partial<AiTiming>;
 	maxBatchChars?: number;
 	maxBatchItems?: number;
@@ -83,13 +86,18 @@ export class AiEngine {
 		for (const c of this.o.clients) {
 			let attempts = 0;
 			while (!this.dead.has(c)) {
+				throwIfAborted(this.o.signal);
 				if (this.o.stop?.()) {
 					return null;
 				}
 				try {
 					this.requests++;
-					return { text: await c.complete(prompt), model: c.label };
+					const text = await c.complete(prompt, { signal: this.o.signal });
+					return { text, model: c.describe?.() ?? c.label };
 				} catch (e) {
+					if (isCancelled(e)) {
+						throw e;
+					}
 					const err = e instanceof LlmError ? e : new LlmError((e as Error).message, 'transient');
 					if (err.kind === 'unavailable' || err.kind === 'quota') {
 						this.dead.add(c);
@@ -105,7 +113,7 @@ export class AiEngine {
 					}
 					const wait = err.retryAfterMs ?? this.t.rateBackoffMs * 2 ** (attempts - 1);
 					this.o.log(`${c.label}: ${err.message}; waiting ${Math.round(wait / 1000)}s (retry ${attempts}/${max})`);
-					await sleep(wait);
+					await waitUnlessAborted(sleep, wait, this.o.signal);
 				}
 			}
 		}
@@ -122,6 +130,7 @@ export class AiEngine {
 			if (!this.usable() || this.o.stop?.()) {
 				break;
 			}
+			throwIfAborted(this.o.signal);
 			await this.runBatch(req, batch, results, 0);
 		}
 		return results;

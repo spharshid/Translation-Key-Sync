@@ -1,3 +1,4 @@
+import { throwIfAborted, waitUnlessAborted } from '../cancel';
 import { LlmClient, LlmError, OpenAiCompatClient } from './clients';
 
 /**
@@ -83,9 +84,17 @@ export class FreeEndpointClient implements LlmClient {
 		return Math.max(slotFree, this.blockedUntil.get(model) ?? 0);
 	}
 
+	private lastModel?: string;
+
+	/** the model that answered the last request */
+	describe(): string {
+		return this.lastModel ? `${this.lastModel} via ${FREE_ENDPOINT_NAME}` : this.label;
+	}
+
 	async complete(prompt: string, opts: { signal?: AbortSignal } = {}): Promise<string> {
 		const waitedFrom = this.now();
 		for (;;) {
+			throwIfAborted(opts.signal);
 			const models = await this.discover();
 			if (!models.length) {
 				throw new LlmError('no model is offered by the free service right now', 'unavailable');
@@ -97,12 +106,14 @@ export class FreeEndpointClient implements LlmClient {
 				if (this.now() - waitedFrom + wait > this.maxWait) {
 					throw new LlmError('the free service is rate limiting this connection (2 requests per minute per model)', 'rate', wait);
 				}
-				await this.sleep(wait);
+				await waitUnlessAborted(this.sleep, wait, opts.signal);
 				continue;
 			}
 			this.calls.set(ready, [...this.recent(ready), this.now()]);
 			try {
-				return await new OpenAiCompatClient({ baseUrl: this.base, model: ready, timeoutMs: 180_000, temperature: 0.2 }).complete(prompt, opts);
+				const answer = await new OpenAiCompatClient({ baseUrl: this.base, model: ready, timeoutMs: 180_000, temperature: 0.2 }).complete(prompt, opts);
+				this.lastModel = ready;
+				return answer;
 			} catch (e) {
 				if (e instanceof LlmError && e.kind === 'rate') {
 					// someone else behind the same IP used the allowance: honour Retry-After and try another model

@@ -10,6 +10,7 @@ export interface StatusData {
 	scanError?: string;
 	pending: PendingEntry[];
 	lastError?: { at: number; message: string };
+	lastSync?: { at: number; text: string };
 	at: number;
 	/** false when Sync Locales is set not to translate the other languages */
 	syncsLocales?: boolean;
@@ -60,6 +61,9 @@ export function renderStatus(d: StatusData): { html: string; targets: Target[] }
 	const problems = scan?.issues ?? [];
 
 	const card = (n: number, label: string, bad: boolean) => `<div class="card ${n && bad ? 'warn' : ''}"><div class="n">${n}</div><div>${esc(label)}</div></div>`;
+	if (d.lastSync) {
+		out.push(`<p class="hint">Last sync that translated something (${esc(ago(d.lastSync.at))}): <b>${esc(d.lastSync.text)}</b>.</p>`);
+	}
 	out.push(
 		`<div class="cards">${card(missingKeys + outdatedKeys, 'not translated yet', true)}${card(english.length, 'waiting for a translator', true)}${card(machine.length, 'machine-translated, AI will redo', false)}${card(problems.length, 'problems to fix', true)}</div>`,
 	);
@@ -81,7 +85,7 @@ export function renderStatus(d: StatusData): { html: string; targets: Target[] }
 	if (!problems.length) {
 		out.push('<p class="empty">No broken files.</p>');
 	} else {
-		out.push('<p class="hint">These files were <b>not changed</b>. Fix them, then press <b>Rescan</b> or <b>Sync Locales</b>.</p><table><tr><th>Language</th><th>File</th><th>Problem</th></tr>');
+		out.push('<p class="hint">These files were <b>not changed</b>. Fix them, then press <b>Rescan</b> or <b>Sync all missing</b>.</p><table><tr><th>Language</th><th>File</th><th>Problem</th></tr>');
 		for (const i of problems) {
 			const where = i.kind === 'invalid-json' ? `line ${i.line}: ${i.message}` : `${i.key ? `<code>${esc(i.key)}</code>: ` : ''}${esc(i.message)}`;
 			const what = i.kind === 'invalid-json' ? 'Invalid JSON' : 'Structure differs from the base language';
@@ -101,8 +105,8 @@ export function renderStatus(d: StatusData): { html: string; targets: Target[] }
 	} else {
 		out.push(
 			d.syncsLocales === false
-				? '<p class="hint">No ticked destination translates into languages (settings: destinations), so Sync Locales will not fill these.</p>'
-				: '<p class="hint"><b>Sync Locales</b> translates all of these.</p>',
+				? '<p class="hint">No ticked destination translates into languages (settings: destinations), so Sync all missing will not fill these.</p>'
+				: '<p class="hint"><b>Sync all missing</b> translates all of these.</p>',
 		);
 		const section = (title: string, list: ScanEntry[]) => {
 			if (!list.length) {
